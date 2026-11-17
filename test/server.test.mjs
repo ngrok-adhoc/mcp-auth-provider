@@ -128,6 +128,10 @@ test("debug requires gateway identity and reports no secrets or request payloads
   });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    "default-src 'none'; style-src 'unsafe-inline'; font-src https://assets.ngrok.com; frame-ancestors 'none'",
+  );
   const html = await response.text();
   assert.match(html, /HTTP 405 — reachable; MCP protocol not verified/);
   assert.match(html, /Recent MCP forwarding results/);

@@ -83,7 +83,7 @@ Use your existing HTTP server command (for example `node server.mjs`) instead of
 
 ## Docker and background use
 
-Build the local image, then use the example as a sidecar for host services:
+From the provider checkout, build the local image and use the example as a sidecar for host services. Put an ignored `.env` beside `compose.example.yml` or point its `env_file` to your existing settings:
 
 ```sh
 docker build -t mcp-oauth-provider:local .
@@ -97,6 +97,10 @@ docker compose -f compose.example.yml down
 The image runs as a nonroot user, opens no local ports, and defaults to `--no-debug` for headless use. Set `APP_URL` and `MCP_URL` to `host.docker.internal` for host services or Compose service names such as `http://app:3000` and `http://mcp:8000/mcp`. Container `localhost` means the provider container. On Linux, host-gateway cannot reach a service bound only to host loopback: use a shared Compose network or an appropriately reachable host address.
 
 To start your existing containerized app/MCP too, add the provider service from the example to their Compose stack and run `docker compose up`. The example's `restart: unless-stopped` supplies service-like process supervision. It does not make OAuth state persistent or remove token expiry. No OS service installer or container-registry publication is included.
+
+## Python walkthrough
+
+[Connect a small Python app](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) provides a self-contained Python file, `.env` setup and a first authenticated tool call. The example stays in the guide; the CLI package contains no demo app.
 
 ## Diagnose a connection
 
