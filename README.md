@@ -11,7 +11,7 @@ Requires **Node.js 24+**, npm/npx, and an ngrok account with paid internal endpo
 For now, use a local package; it has not been published to npm. Prepare it once from the source checkout:
 
 ```sh
-git clone https://github.com/ngrok-adhoc/mcp-auth-provider.git
+git clone --branch mcp-auth-provider-cli https://github.com/ngrok-adhoc/mcp-auth-provider.git
 cd mcp-auth-provider
 npm ci
 npm pack
