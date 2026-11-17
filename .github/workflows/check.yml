@@ -21,3 +21,4 @@ jobs:
       - run: docker build -t mcp-oauth-provider:ci .
       - run: docker run --rm mcp-oauth-provider:ci --version
       - run: docker run --rm mcp-oauth-provider:ci --help
+      - run: docker run --rm --entrypoint node mcp-oauth-provider:ci -e 'require("@ngrok/ngrok"); console.log("Native ngrok SDK loaded")'
