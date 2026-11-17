@@ -1,0 +1,56 @@
+services:
+  mcp:
+    image: python:3.13-slim
+    init: true
+    command:
+      - sh
+      - -ec
+      - |
+        pip install --no-cache-dir 'mcp==2.3.0'
+        exec python -u - <<'PY'
+        from mcp.server import MCPServer
+        from mcp.types import ToolAnnotations
+        from starlette.requests import Request
+        from starlette.responses import HTMLResponse
+
+        mcp = MCPServer("Hello Python")
+
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False,
+                                             idempotent_hint=True, open_world_hint=False))
+        async def hello() -> str:
+            """Return a greeting from the Python container."""
+            return "Hello from Python!"
+
+        @mcp.custom_route("/", methods=["GET"])
+        async def homepage(request: Request) -> HTMLResponse:
+            return HTMLResponse("<h1>My Python app</h1><p>Call the hello MCP tool.</p>")
+
+        mcp.run("streamable-http", host="0.0.0.0", port=8000,
+                stateless_http=True, json_response=True)
+        PY
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  provider:
+    build:
+      context: ..
+    init: true
+    depends_on:
+      mcp:
+        condition: service_healthy
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN in .env}
+      OWNER_EMAIL: ${OWNER_EMAIL:?Set OWNER_EMAIL in .env}
+      NGROK_URL: ${NGROK_URL:-}
+      APP_URL: http://mcp:8000
+      MCP_URL: http://mcp:8000/mcp

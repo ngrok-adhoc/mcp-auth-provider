@@ -67,6 +67,8 @@ One public ngrok URL
 
 The CLI uses the ngrok Node SDK to start **one public endpoint and two internal endpoints**. JWT signature, issuer, audience, scope and time checks run in Traffic Policy. A small local forwarding adapter provides useful upstream errors; it does not implement MCP tools or change your server.
 
+The provider also serves the approval page; your app needs no authorization route. It grants one connection permission (`mcp:use`), allowing the client to call the tools your MCP server exposes. It does not implement app-specific read/write permissions.
+
 Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/auth/*`, `/token`, `/reg`, `/jwks`, `/interaction/*`, the provider's OAuth/MCP `/.well-known/` discovery paths, and ngrok's `/ngrok/*` login callbacks. Other app paths and query strings pass through. The configured non-root MCP path is also reserved from app fallthrough, including case and encoded variants, so hostname aliases cannot bypass authorization.
 
 ## Start alongside Python or Node
@@ -98,9 +100,9 @@ The image runs as a nonroot user, opens no local ports, and defaults to `--no-de
 
 To start your existing containerized app/MCP too, add the provider service from the example to their Compose stack and run `docker compose up`. The example's `restart: unless-stopped` supplies service-like process supervision. It does not make OAuth state persistent or remove token expiry. No OS service installer or container-registry publication is included.
 
-## Python walkthrough
+## Test with a complete Docker stack
 
-[Connect a small Python app](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) provides a self-contained Python file, `.env` setup and a first authenticated tool call. The example stays in the guide; the CLI package contains no demo app.
+[Run the Docker Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) to start a tiny app, an HTTP MCP `hello` tool and the provider from one Compose file, then call the tool through ngrok using Codex or Claude Code. No existing MCP server is needed; the CLI package contains no demo app.
 
 ## Diagnose a connection
 
@@ -120,8 +122,8 @@ Use [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-inspector) for
 
 ## Demo limits
 
-- Keys, registrations, grants and sessions are in memory. Restarting requires client reauthorization.
-- Access tokens last five minutes; no refresh tokens are issued. This is not unattended production authentication.
+Access tokens last seven days. Rotating refresh tokens share the same seven-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
+
 - One Google owner, one HTTP MCP resource, and HTTP loopback client callbacks. Hosted callbacks, multiple MCPs and stdio translation are outside this tool.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
 
