@@ -16,10 +16,7 @@ const withAction = (rules, type) =>
 test("only an exact allowed Google owner receives trusted helper access", () => {
   const ownerEmail = 'owner"\\@example.com';
   const rules = createPolicy({ ...settings, ownerEmail }).on_http_request;
-  assert.deepEqual(rules[0].actions[0].config.headers, [
-    "x-demo-gateway-secret",
-    "x-mcp-auth-gateway-secret",
-  ]);
+  assert.deepEqual(rules[0].actions[0].config.headers, ["x-mcp-oauth-provider-secret"]);
   const google = withAction(rules, "oauth");
   assert.equal(google.length, 1);
   assert.match(expression(google[0]), /mcp-debug/);
@@ -30,7 +27,7 @@ test("only an exact allowed Google owner receives trusted helper access", () => 
   assert.ok(expression(grants[0]).includes(`identity.email == ${JSON.stringify(ownerEmail)}`));
   assert.match(expression(grants[0]), /has\(actions.ngrok.oauth.identity.email\)/);
   assert.equal(
-    grants[0].actions.at(-1).config.headers["x-demo-gateway-secret"],
+    grants[0].actions.at(-1).config.headers["x-mcp-oauth-provider-secret"],
     settings.gatewaySecret,
   );
   assert.throws(() => createPolicy({ ...settings, ownerEmail: "" }), /OWNER_EMAIL/);

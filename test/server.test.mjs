@@ -55,12 +55,12 @@ test("app routing, fixed MCP target and reserved paths preserve the auth boundar
         url: req.url,
         body,
         authorization: req.headers.authorization,
-        secret: req.headers["x-demo-gateway-secret"],
+        secret: req.headers["x-mcp-oauth-provider-secret"],
       }),
     );
   });
   const app = await fetch(`${helperUrl}/assets/app.css?theme=blue`, {
-    headers: { authorization: "Bearer app-session", "x-demo-gateway-secret": gatewaySecret },
+    headers: { authorization: "Bearer app-session", "x-mcp-oauth-provider-secret": gatewaySecret },
   });
   assert.equal(app.status, 200);
   assert.deepEqual(await app.json(), {
@@ -74,7 +74,10 @@ test("app routing, fixed MCP target and reserved paths preserve the auth boundar
   const mcp = await fetch(`${mcpProxyUrl}/mcp?ignored=secret`, {
     method: "POST",
     body: "unchanged MCP payload",
-    headers: { authorization: "Bearer not-for-upstream", "x-demo-gateway-secret": gatewaySecret },
+    headers: {
+      authorization: "Bearer not-for-upstream",
+      "x-mcp-oauth-provider-secret": gatewaySecret,
+    },
   });
   assert.equal(mcp.status, 201);
   assert.equal(mcp.headers.get("x-upstream"), "preserved");
@@ -102,7 +105,7 @@ test("debug requires gateway identity and reports no secrets or request payloads
   });
   assert.equal((await fetch(`${helperUrl}/mcp-debug`)).status, 403);
   assert.equal(
-    (await fetch(`${helperUrl}/mcp-debug`, { headers: { "x-demo-gateway-secret": "wrong" } }))
+    (await fetch(`${helperUrl}/mcp-debug`, { headers: { "x-mcp-oauth-provider-secret": "wrong" } }))
       .status,
     403,
   );
@@ -110,7 +113,7 @@ test("debug requires gateway identity and reports no secrets or request payloads
     (
       await fetch(`${helperUrl}/mcp-debug/`, {
         method: "POST",
-        headers: { "x-demo-gateway-secret": gatewaySecret },
+        headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
       })
     ).status,
     405,
@@ -121,7 +124,7 @@ test("debug requires gateway identity and reports no secrets or request payloads
     headers: { authorization: "Bearer sensitive-token", cookie: "sensitive-cookie" },
   });
   const response = await fetch(`${helperUrl}/mcp-debug?code=debug-code`, {
-    headers: { "x-demo-gateway-secret": gatewaySecret },
+    headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
   });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -175,7 +178,13 @@ test("MCP responses stream before the upstream closes", async (t) => {
 });
 
 test("case-insensitive MCP routes cannot bypass auth through loopback host aliases", async (t) => {
-  for (const hostname of ["127.0.0.1", "localhost", "[::1]"]) {
+  for (const hostname of [
+    "127.0.0.1",
+    "localhost",
+    "[::1]",
+    "host.docker.internal",
+    "mcp-service",
+  ]) {
     const { helperUrl, url } = await fixture(
       t,
       (req, res) =>
@@ -198,7 +207,7 @@ test(
     upstream.on("upgrade", (req, socket, head) => {
       upgrades++;
       assert.equal(req.url, "/hmr?version=1");
-      assert.equal(req.headers["x-demo-gateway-secret"], undefined);
+      assert.equal(req.headers["x-mcp-oauth-provider-secret"], undefined);
       socket.on("error", () => {});
       socket.on("end", () => socket.end());
       socket.write(
@@ -218,7 +227,7 @@ test(
       while (!received.includes(value)) await once(socket, "data");
     };
     socket.write(
-      `GET /hmr?version=1 HTTP/1.1\r\nHost: provider.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nx-demo-gateway-secret: ${gatewaySecret}\r\n\r\nclient-head`,
+      `GET /hmr?version=1 HTTP/1.1\r\nHost: provider.example\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nx-mcp-oauth-provider-secret: ${gatewaySecret}\r\n\r\nclient-head`,
     );
     await until("echo:client-head");
     assert.match(received, /HTTP\/1.1 101 Switching Protocols/);

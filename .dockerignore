@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!bin/
+!bin/**
+!lib/
+!lib/**

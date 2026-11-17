@@ -1,0 +1,14 @@
+services:
+  mcp-oauth-provider:
+    build: .
+    image: mcp-oauth-provider:local
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside a container, localhost is the container itself. Use these host
+      # addresses, or set APP_URL/MCP_URL to services on the same Compose network.
+      APP_URL: ${APP_URL:-http://host.docker.internal:3000}
+      MCP_URL: ${MCP_URL:-http://host.docker.internal:3001/mcp}
+    extra_hosts:
+      - host.docker.internal:host-gateway

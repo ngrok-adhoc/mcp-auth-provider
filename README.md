@@ -1,4 +1,4 @@
-# MCP Auth Provider
+# MCP OAuth Provider
 
 Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, without changing the server. Keep your app at `/`, connect MCP clients at `/mcp`, and check the connection at `/mcp-debug`.
 
@@ -11,13 +11,13 @@ Requires **Node.js 24+**, npm/npx, and an ngrok account with paid internal endpo
 For now, use a local package; it has not been published to npm. Prepare it once from the source checkout:
 
 ```sh
-git clone --branch mcp-auth-provider-cli https://github.com/ngrok-adhoc/mcp-auth-provider.git
-cd mcp-auth-provider
+git clone --branch mcp-oauth-provider-cli https://github.com/ngrok-adhoc/mcp-oauth-provider.git
+cd mcp-oauth-provider
 npm ci
 npm pack
 ```
 
-This creates `mcp-auth-provider-0.1.0.tgz`. If someone has already provided that file, skip the checkout and packaging steps. Then switch to your app directory:
+This creates `mcp-oauth-provider-0.1.0.tgz`. If someone has already provided that file, skip the checkout and packaging steps. Then switch to your app directory:
 
 ```sh
 cd /path/to/your/existing-app
@@ -35,12 +35,12 @@ Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The 
 Start your app and MCP server as usual, then run:
 
 ```sh
-npx --yes --package=/absolute/path/to/mcp-auth-provider-0.1.0.tgz mcp-auth-provider
+npx --yes --package=/absolute/path/to/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider
 ```
 
 `npx` installs the package's dependencies automatically; your app needs no additional install step.
 
-The command prints the app, MCP and debug URLs. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your app and MCP processes keep running.
+The command prints the app, MCP and debug URLs and opens the protected debug page in your default browser. Add `--no-debug` to skip automatic opening; the protected page remains available. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your app and MCP processes keep running.
 
 The defaults are `http://127.0.0.1:3000` for the app and `http://127.0.0.1:3001/mcp` for MCP. If yours differ, add:
 
@@ -51,7 +51,7 @@ MCP_URL=http://127.0.0.1:3001/mcp
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
-Upstreams must use loopback HTTP(S) URLs. `APP_URL` is an origin; `MCP_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
+Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
 
 The provider reads `.env` from the **working directory**. Existing environment variables take precedence. No `.mjs` or YAML configuration needs editing; `.mjs` files are the implementation. Use `--help` for settings or `--version` for the package version.
 
@@ -67,7 +67,36 @@ One public ngrok URL
 
 The CLI uses the ngrok Node SDK to start **one public endpoint and two internal endpoints**. JWT signature, issuer, audience, scope and time checks run in Traffic Policy. A small local forwarding adapter provides useful upstream errors; it does not implement MCP tools or change your server.
 
-Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/auth/*`, `/token`, `/reg`, `/jwks`, `/interaction/*`, the provider's OAuth/MCP `/.well-known/` discovery paths, and ngrok's `/ngrok/*` login callbacks. Other app paths and query strings pass through. If app and MCP share a local origin, the configured MCP path is also blocked from app fallthrough so it cannot bypass authorization.
+Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/auth/*`, `/token`, `/reg`, `/jwks`, `/interaction/*`, the provider's OAuth/MCP `/.well-known/` discovery paths, and ngrok's `/ngrok/*` login callbacks. Other app paths and query strings pass through. The configured non-root MCP path is also reserved from app fallthrough, including case and encoded variants, so hostname aliases cannot bypass authorization.
+
+## Start alongside Python or Node
+
+Your MCP application never imports this package. A shell process runner can start both independent commands and stop the companion when either exits:
+
+```sh
+npx --yes --package=concurrently concurrently --kill-others \
+  "python server.py" \
+  "npx --yes --package=/absolute/path/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider"
+```
+
+Use your existing HTTP server command (for example `node server.mjs`) instead of `python server.py`. Add the app command as a third entry if it runs separately. Put the command in a project script or task file if you want a short alias such as `just dev`; no MCP source changes are needed.
+
+## Docker and background use
+
+Build the local image, then use the example as a sidecar for host services:
+
+```sh
+docker build -t mcp-oauth-provider:local .
+docker compose -f compose.example.yml up --build
+# Run in the background:
+docker compose -f compose.example.yml up --build -d
+# Stop:
+docker compose -f compose.example.yml down
+```
+
+The image runs as a nonroot user, opens no local ports, and defaults to `--no-debug` for headless use. Set `APP_URL` and `MCP_URL` to `host.docker.internal` for host services or Compose service names such as `http://app:3000` and `http://mcp:8000/mcp`. Container `localhost` means the provider container. On Linux, host-gateway cannot reach a service bound only to host loopback: use a shared Compose network or an appropriately reachable host address.
+
+To start your existing containerized app/MCP too, add the provider service from the example to their Compose stack and run `docker compose up`. The example's `restart: unless-stopped` supplies service-like process supervision. It does not make OAuth state persistent or remove token expiry. No OS service installer or container-registry publication is included.
 
 ## Diagnose a connection
 

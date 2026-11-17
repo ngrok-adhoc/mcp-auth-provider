@@ -2,6 +2,7 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { openDebugPage } from "../lib/browser.mjs";
 import { readConfig } from "../lib/config.mjs";
 import { startServers } from "../lib/server.mjs";
 import { reservePublicUrl, startTunnels } from "../lib/tunnel.mjs";
@@ -19,7 +20,7 @@ async function stop() {
   await reservation?.close();
   await servers?.close();
 }
-const help = `MCP Auth Provider
+const help = `MCP OAuth Provider
 
 Run this command from your app directory. Settings come from .env or environment:
   NGROK_AUTHTOKEN  Your ngrok agent authtoken (required)
@@ -30,11 +31,16 @@ Run this command from your app directory. Settings come from .env or environment
 
 The MCP server and app keep their existing code. Paid internal endpoints required.
 Connect your MCP client at /mcp. Open /mcp-debug for protected diagnostics.
+The protected debug page opens automatically. Use --no-debug to skip opening it.
 Use --help or --version. Stop with Ctrl+C.
 `;
 async function main() {
   const { values } = parseArgs({
-    options: { help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" } },
+    options: {
+      help: { type: "boolean", short: "h" },
+      version: { type: "boolean", short: "v" },
+      "no-debug": { type: "boolean" },
+    },
   });
   if (values.help) return console.log(help);
   if (values.version)
@@ -77,8 +83,9 @@ async function main() {
     return;
   }
   console.log(
-    `\nMCP Auth Provider is ready\n\nApp:     ${issuer}/\nMCP:     ${issuer}/mcp\nDebug:   ${issuer}/mcp-debug\nOwner:   ${config.ownerEmail}\n\nStart your existing app at ${config.appUrl} and MCP server at ${config.mcpUrl}.\nSign in with Google when connecting your MCP client. Ctrl+C stops the provider.\n`,
+    `\nMCP OAuth Provider is ready\n\nApp:     ${issuer}/\nMCP:     ${issuer}/mcp\nDebug:   ${issuer}/mcp-debug\nOwner:   ${config.ownerEmail}\n\nStart your existing app at ${config.appUrl} and MCP server at ${config.mcpUrl}.\nSign in with Google when connecting your MCP client. Ctrl+C stops the provider.\n`,
   );
+  if (!values["no-debug"]) openDebugPage(`${issuer}/mcp-debug`);
 }
 main().catch(async (error) => {
   await stop().catch(() => {});
@@ -86,7 +93,7 @@ main().catch(async (error) => {
   for (const secret of [...secrets, config?.authtoken].filter(Boolean))
     message = message.replaceAll(secret, "[redacted]");
   console.error(
-    `\nMCP Auth Provider could not start: ${message}\nCheck .env and your ngrok account permissions, then rerun. Use --help for settings.`,
+    `\nMCP OAuth Provider could not start: ${message}\nCheck .env and your ngrok account permissions, then rerun. Use --help for settings.`,
   );
   process.exitCode = 1;
 });

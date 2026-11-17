@@ -21,7 +21,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience and one-time codes", 
     use: "sig",
     alg: "RS256",
   };
-  const resource = "https://mcp-auth-provider.example/mcp";
+  const resource = "https://mcp-oauth-provider.example/mcp";
   ({ handle } = createIssuer({ issuer, gatewaySecret, jwks: { keys: [key] }, resource }));
   const cookies = new Map();
   async function request(path, options = {}) {
@@ -114,32 +114,33 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience and one-time codes", 
       if (location.startsWith("/interaction/")) {
         assert.equal((await request(location)).status, 403);
         assert.equal(
-          (await request(location, { headers: { "x-demo-gateway-secret": "incorrect" } })).status,
+          (await request(location, { headers: { "x-mcp-oauth-provider-secret": "incorrect" } }))
+            .status,
           403,
         );
         assert.equal(
           (
             await request(location, {
               method: "DELETE",
-              headers: { "x-demo-gateway-secret": gatewaySecret },
+              headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
             })
           ).status,
           405,
         );
         const page = await request(location, {
-          headers: { "x-demo-gateway-secret": gatewaySecret },
+          headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
         });
         assert.equal(page.status, 200, await page.clone().text());
         assert.ok(page.headers.get("content-security-policy").includes("http://127.0.0.1:9988"));
         const html = await page.text();
-        assert.match(html, /<title>MCP Auth Provider<\/title>/);
+        assert.match(html, /<title>MCP OAuth Provider<\/title>/);
         assert.match(html, /Allow this client to use your MCP server\?/);
         const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
         const submit = (token, origin = issuer) =>
           request(location, {
             method: "POST",
             headers: {
-              "x-demo-gateway-secret": gatewaySecret,
+              "x-mcp-oauth-provider-secret": gatewaySecret,
               Origin: origin,
               "Content-Type": "application/x-www-form-urlencoded",
             },
