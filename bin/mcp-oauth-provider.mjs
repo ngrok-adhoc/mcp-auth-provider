@@ -22,14 +22,14 @@ async function stop() {
 }
 const help = `MCP OAuth Provider
 
-Run this command from your app directory. Settings come from .env or environment:
+Run this command from your MCP server’s project directory. Settings come from .env or environment:
   NGROK_AUTHTOKEN  Your ngrok agent authtoken (required)
   OWNER_EMAIL      Allowed Google account (required)
-  APP_URL          App origin (default http://127.0.0.1:3000)
+  APP_URL          Optional web app origin (default http://127.0.0.1:3000)
   MCP_URL          Existing MCP URL (default http://127.0.0.1:3001/mcp)
   NGROK_URL        Optional public HTTPS origin; otherwise allocated automatically
 
-The MCP server and app keep their existing code. Paid internal endpoints required.
+Your MCP server keeps its existing code. No separate web app is required. Paid internal endpoints required.
 Connect your MCP client at /mcp. Open /mcp-debug for protected diagnostics.
 The protected debug page opens automatically. Use --no-debug to skip opening it.
 Use --help or --version. Stop with Ctrl+C.
@@ -83,7 +83,7 @@ async function main() {
     return;
   }
   console.log(
-    `\nMCP OAuth Provider is ready\n\nApp:     ${issuer}/\nMCP:     ${issuer}/mcp\nDebug:   ${issuer}/mcp-debug\nOwner:   ${config.ownerEmail}\n\nStart your existing app at ${config.appUrl} and MCP server at ${config.mcpUrl}.\nSign in with Google when connecting your MCP client. Ctrl+C stops the provider.\n`,
+    `\nMCP OAuth Provider is ready\n\nApp:     ${issuer}/\nMCP:     ${issuer}/mcp\nDebug:   ${issuer}/mcp-debug\nOwner:   ${config.ownerEmail}\n\nRun your existing MCP server at ${config.mcpUrl}.\nOptional web app: ${config.appUrl}.\nSign in with Google when connecting your MCP client. Ctrl+C stops the provider.\n`,
   );
   if (!values["no-debug"]) openDebugPage(`${issuer}/mcp-debug`);
 }

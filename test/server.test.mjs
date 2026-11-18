@@ -226,6 +226,75 @@ test("case-insensitive MCP routes cannot bypass auth through loopback host alias
   }
 });
 
+test("normalized MCP paths cannot bypass authorization through app forwarding", async (t) => {
+  for (const mcpPath of ["/private/mcp", "/private//mcp"]) {
+    let requests = 0;
+    let upgrades = 0;
+    const upstream = createServer((req, res) => {
+      requests++;
+      const path = new URL(
+        `http://upstream${decodeURIComponent(req.url).replaceAll("\\", "/")}`,
+      ).pathname.replace(/\/+/g, "/");
+      res.end(
+        path === "/private/mcp" || decodeURIComponent(req.url).startsWith("/private/mcp/")
+          ? "PRIVATE MCP"
+          : "app",
+      );
+    });
+    upstream.on("upgrade", (_req, socket) => {
+      upgrades++;
+      socket.end(
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+      );
+    });
+    const url = await listen(upstream);
+    const servers = await startServers({
+      appUrl: url,
+      mcpUrl: `${url}${mcpPath}`,
+      issuer: "https://provider.example",
+      gatewaySecret,
+      jwks,
+    });
+    t.after(async () => {
+      await servers.close();
+      await close(upstream);
+    });
+    for (const path of [
+      "/private/mcp",
+      "/private//mcp",
+      "/private/%2fmcp",
+      "/%2fprivate/mcp",
+      "/public%2f..%2fprivate/mcp",
+      "/private%5cmcp",
+      "/private/mcp/public%2f..%2f..%2f..%2fassets",
+    ]) {
+      assert.equal(await (await fetch(`${url}${path}`)).text(), "PRIVATE MCP", path);
+      assert.equal((await fetch(`${servers.helperUrl}${path}`)).status, 404, path);
+      const status = await new Promise((resolve, reject) => {
+        const req = httpRequest(
+          `${servers.helperUrl}${path}`,
+          { headers: { connection: "Upgrade", upgrade: "websocket" } },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          },
+        );
+        req.on("error", reject);
+        req.on("upgrade", (_res, socket) => {
+          socket.destroy();
+          reject(new Error("Normalized MCP route upgraded without authorization"));
+        });
+        req.end();
+      });
+      assert.equal(status, 404, path);
+    }
+    assert.equal(upgrades, 0);
+    assert.equal(requests, 7, "Only the direct upstream checks reached MCP");
+    assert.equal(await (await fetch(`${servers.mcpProxyUrl}/mcp`)).text(), "PRIVATE MCP");
+    assert.equal(await (await fetch(`${servers.helperUrl}/assets/app.css`)).text(), "app");
+  }
+});
+
 test(
   "root-mounted MCP blocks all app fallthrough even through hostname aliases",
   { timeout: 5000 },
