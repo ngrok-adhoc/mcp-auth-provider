@@ -66,18 +66,9 @@ See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/m
 
 ## Run
 
-Requires **Node.js 24+**, npm/npx, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
+Requires **Node.js 24+**, npm/npx, Git, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
 
-For now, use a local package; it has not been published to npm. Prepare it once from the source checkout:
-
-```sh
-git clone --branch main https://github.com/ngrok-adhoc/mcp-oauth-provider.git
-cd mcp-oauth-provider
-npm ci
-npm pack
-```
-
-This creates `mcp-oauth-provider-0.1.0.tgz`. If someone has already provided that file, skip the checkout and packaging steps. Then switch to your app directory:
+Run directly from the repository’s `main` branch with `npx`; no manual clone, packaging or npm publication is needed. Start in your app directory:
 
 ```sh
 cd /path/to/your/existing-app
@@ -95,10 +86,17 @@ Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The 
 Start your app and MCP server as usual, then run:
 
 ```sh
-npx --yes --package=/absolute/path/to/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider
+npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider
 ```
 
-`npx` installs the package's dependencies automatically; your app needs no additional install step.
+`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes. To install the command globally instead:
+
+```sh
+npm install --global git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main
+mcp-oauth-provider
+```
+
+Replace `#main` with a release tag or commit SHA to pin a revision.
 
 The command prints the app, MCP and debug URLs and opens the protected debug page in your default browser. Add `--no-debug` to skip automatic opening; the protected page remains available. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your app and MCP processes keep running.
 
@@ -138,7 +136,7 @@ Your MCP application never imports this package. A shell process runner can star
 ```sh
 npx --yes --package=concurrently concurrently --kill-others \
   "python server.py" \
-  "npx --yes --package=/absolute/path/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider"
+  "npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider"
 ```
 
 Use your existing HTTP server command (for example `node server.mjs`) instead of `python server.py`. Add the app command as a third entry if it runs separately. Put the command in a project script or task file if you want a short alias such as `just dev`; no MCP source changes are needed.
