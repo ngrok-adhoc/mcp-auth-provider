@@ -6,14 +6,16 @@ This is a lightweight developer tool: ngrok Traffic Policy handles access checks
 
 ## Try with Docker Compose
 
-Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python or Node installation is needed for this example.
+Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python, Node installation or repository checkout is needed.
+
+> Publication pending: `ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0` is the planned first image release. The pull-based steps below require that release to be published.
 
 ```sh
-git clone --branch mcp-oauth-provider-cli https://github.com/ngrok-adhoc/mcp-oauth-provider.git
-cd mcp-oauth-provider
+mkdir mcp-demo
+cd mcp-demo
 ```
 
-Create an ignored `.env` in that checkout root:
+Create `.env` in that directory:
 
 ```dotenv
 NGROK_AUTHTOKEN=your_agent_authtoken
@@ -22,13 +24,14 @@ OWNER_EMAIL=your_google_email
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
-Use your **ngrok agent authtoken**, not an API key. Keep `.env` private. From the checkout root, start the example:
+Use your **ngrok agent authtoken**, not an API key. Keep `.env` private and out of Git. Copy the single [Compose example from the tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md#start-the-stack) into `compose.yaml` in the same directory, then run:
 
 ```sh
-docker compose --env-file .env -f docs/compose.yaml up --build
+docker compose --env-file .env up -d
+docker compose --env-file .env logs -f provider
 ```
 
-The single Compose file starts the provider and a minimal Python HTTP MCP server with a `hello` tool. It has no demo web app and publishes no container ports. A 404 at the bare public `/` is expected.
+Docker pulls the provider image and starts a minimal Python HTTP MCP server with a `hello` tool. There is no demo web app or published container port. A 404 at the bare public `/` is expected.
 
 **Connect clients to the printed public HTTPS ngrok URL ending in `/mcp`, not localhost or `http://mcp:8000/mcp`.** Localhost may appear during the browser OAuth callback; that callback is not the MCP server address.
 
@@ -57,7 +60,7 @@ Ask either client:
 
 Approve the tool call if prompted. Expect **`Hello from Python!`**. The provider hosts sign-in, approval and token handling; the downstream MCP server needs no OAuth routes, provider imports or token-handling code. It only needs an existing HTTP MCP endpoint reachable by the provider. No separate app is required; stdio servers are outside this tool.
 
-See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) for background startup, shutdown and reconnecting after a provider restart.
+See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) for shutdown and reconnecting after a provider restart.
 
 ## Run
 
@@ -140,24 +143,11 @@ Use your existing HTTP server command (for example `node server.mjs`) instead of
 
 ## Docker and background use
 
-From the provider checkout, build the local image and use the example as a sidecar for host services. Put an ignored `.env` beside `compose.example.yml` or point its `env_file` to your existing settings:
+Use `ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0` with the [tutorial's Compose example](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md). It runs in the background with `up -d`; use `logs -f provider` to see connection URLs and `down` to stop the stack.
 
-```sh
-docker build -t mcp-oauth-provider:local .
-docker compose -f compose.example.yml up --build
-# Run in the background:
-docker compose -f compose.example.yml up --build -d
-# Stop:
-docker compose -f compose.example.yml down
-```
+The image runs as a nonroot user, opens no local ports, and defaults to `--no-debug` for headless use. Set `APP_URL` and `MCP_URL` to trusted services on your Compose network, such as `http://app:3000` and `http://mcp:8000/mcp`. Container `localhost` means the provider container. Host services can use `host.docker.internal`; on Linux, a host-gateway mapping still cannot reach a listener bound only to host loopback.
 
-The image runs as a nonroot user, opens no local ports, and defaults to `--no-debug` for headless use. Set `APP_URL` and `MCP_URL` to `host.docker.internal` for host services or Compose service names such as `http://app:3000` and `http://mcp:8000/mcp`. Container `localhost` means the provider container. On Linux, host-gateway cannot reach a service bound only to host loopback: use a shared Compose network or an appropriately reachable host address.
-
-To start your existing containerized app/MCP too, add the provider service from the example to their Compose stack and run `docker compose up`. The example's `restart: unless-stopped` supplies service-like process supervision. It does not make OAuth state persistent or remove token expiry. No OS service installer or container-registry publication is included.
-
-## Test with a complete Docker stack
-
-[Run the Docker Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) to start an HTTP MCP `hello` server and the provider from one Compose file, then call the tool through ngrok using Codex or Claude Code. No existing MCP server is needed; the CLI package contains no demo app.
+The provider can run beside an existing MCP container; the MCP server never imports this package. Process supervision does not make OAuth state persistent. No custom supervisor or OS service installer is included.
 
 ## Diagnose a connection
 
@@ -181,6 +171,7 @@ Access tokens last seven days. Rotating refresh tokens share the same seven-day 
 
 - One Google owner, one HTTP MCP resource, and HTTP loopback client callbacks. Hosted callbacks, multiple MCPs and stdio translation are outside this tool.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
+- When the configured MCP upstream is mounted at `/`, optional app forwarding is disabled. Hostname aliases cannot safely distinguish a separate app from that root-mounted MCP server; the protected public `/mcp` route still works.
 
 ## Develop
 
@@ -192,3 +183,23 @@ npm run check
 For harmless manual fixtures, run `node test/fixtures/upstreams.mjs` and set `APP_URL=http://127.0.0.1:54831` and `MCP_URL=http://127.0.0.1:54832/original-mcp`.
 
 The package's `bin` entry is the CLI; tests exercise configuration, OAuth boundaries, forwarding and Traffic Policy generation. Public npm publication and binary distribution are separate future steps.
+
+## Publish a Docker release
+
+Maintainers release from a clean `main` checkout matching `origin/main`, after the change has been reviewed and merged. Commit the intended version in `package.json` first, then supply that exact version:
+
+```sh
+npm run tag-release -- 0.1.0
+```
+
+The command creates an annotated `v0.1.0` tag without overwriting existing tags. Its push runs **Publish image**, publishing Linux amd64/arm64 images to `ghcr.io/ngrok-adhoc/mcp-oauth-provider` with `0.1.0`, `v0.1.0`, a commit SHA tag and `latest`. Main-branch builds only warm the build cache. Wait for the image workflow to succeed before updating tutorial image versions.
+
+For the first publication, an organization package admin must set the GHCR package visibility to **Public** and verify an anonymous pull; a public source repository alone does not make the image public. No registry login should be required by tutorial users.
+
+If an automated release creates its tag using `GITHUB_TOKEN`, explicitly dispatch the publishing workflow at that tag because that token's tag push does not trigger another workflow:
+
+```sh
+gh workflow run publish-image.yml --ref v0.1.0
+```
+
+The workflow must already be on the default branch for dispatch. Retry a failed image build at the same tag; never overwrite the tag or create another version merely to retry a build.
