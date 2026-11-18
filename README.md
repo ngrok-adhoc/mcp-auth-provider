@@ -88,7 +88,9 @@ Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The 
 Start your app and MCP server as usual, then run:
 
 ```sh
-npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider
+npx --yes \
+  --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main \
+  mcp-oauth-provider
 ```
 
 `npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes.
