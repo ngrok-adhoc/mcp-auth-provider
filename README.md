@@ -4,6 +4,61 @@ Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, 
 
 This is a lightweight developer tool: ngrok Traffic Policy handles access checks and routing; the provider handles OAuth registration, consent and tokens.
 
+## Try with Docker Compose
+
+Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python or Node installation is needed for this example.
+
+```sh
+git clone --branch mcp-oauth-provider-cli https://github.com/ngrok-adhoc/mcp-oauth-provider.git
+cd mcp-oauth-provider
+```
+
+Create an ignored `.env` in that checkout root:
+
+```dotenv
+NGROK_AUTHTOKEN=your_agent_authtoken
+OWNER_EMAIL=your_google_email
+# Optional: choose an HTTPS domain available to your account.
+# NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
+```
+
+Use your **ngrok agent authtoken**, not an API key. Keep `.env` private. From the checkout root, start the example:
+
+```sh
+docker compose --env-file .env -f docs/compose.yaml up --build
+```
+
+The single Compose file starts the provider and a minimal Python HTTP MCP server with a `hello` tool. It has no demo web app and publishes no container ports. A 404 at the bare public `/` is expected.
+
+**Connect clients to the printed public HTTPS ngrok URL ending in `/mcp`, not localhost or `http://mcp:8000/mcp`.** Localhost may appear during the browser OAuth callback; that callback is not the MCP server address.
+
+The commands below use the current test endpoint, `https://mcp-oauth-compose.ngrok.video/mcp`. For your own stack, replace it with the printed MCP URL.
+
+For Codex, open a second terminal:
+
+```sh
+codex mcp add hello-compose --url https://mcp-oauth-compose.ngrok.video/mcp
+codex
+```
+
+Complete browser sign-in and approve the connection. If adding did not start sign-in, run `codex mcp login hello-compose` before starting Codex.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http hello-compose https://mcp-oauth-compose.ngrok.video/mcp
+claude mcp login hello-compose
+claude
+```
+
+Ask either client:
+
+> Call the hello tool from hello-compose and show its exact result.
+
+Approve the tool call if prompted. Expect **`Hello from Python!`**. The provider hosts sign-in, approval and token handling; the downstream MCP server needs no OAuth routes, provider imports or token-handling code. It only needs an existing HTTP MCP endpoint reachable by the provider. No separate app is required; stdio servers are outside this tool.
+
+See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) for background startup, shutdown and reconnecting after a provider restart.
+
 ## Run
 
 Requires **Node.js 24+**, npm/npx, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
@@ -102,7 +157,7 @@ To start your existing containerized app/MCP too, add the provider service from 
 
 ## Test with a complete Docker stack
 
-[Run the Docker Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) to start a tiny app, an HTTP MCP `hello` tool and the provider from one Compose file, then call the tool through ngrok using Codex or Claude Code. No existing MCP server is needed; the CLI package contains no demo app.
+[Run the Docker Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) to start an HTTP MCP `hello` server and the provider from one Compose file, then call the tool through ngrok using Codex or Claude Code. No existing MCP server is needed; the CLI package contains no demo app.
 
 ## Diagnose a connection
 
