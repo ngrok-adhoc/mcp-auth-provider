@@ -1,6 +1,6 @@
 # Test end to end with Docker Compose
 
-Start an HTTP MCP `hello` server and the OAuth provider with one Compose file. You need no existing MCP server and no local Python or Node installation. There is no demo web app.
+This optional smoke test starts an HTTP MCP `hello` server and the OAuth provider with one Compose file. To connect a real server, start with [Run with npx](../README.md#run-with-npx) instead. This test needs no existing MCP server and no local Python or Node installation. No separate web app is required.
 
 ```text
 Codex / Claude Code → https://your-ngrok-host/mcp

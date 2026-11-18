@@ -1,10 +1,94 @@
 # MCP OAuth Provider
 
-Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, without changing the server. Keep your app at `/`, connect MCP clients at `/mcp`, and check the connection at `/mcp-debug`.
+Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, without changing the server. Connect Codex or another OAuth-capable MCP client at `/mcp`, and check the connection at `/mcp-debug`. No sample app or separate web app is required.
 
 This is a lightweight developer tool: ngrok Traffic Policy handles access checks and routing; the provider handles OAuth registration, consent and tokens.
 
 [Run with npx from Git](#run-with-npx), or use Docker with the [Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md).
+
+## Run with npx
+
+Start with your existing HTTP MCP server. Set its upstream URL below; the provider adds OAuth without changing the server’s code or tools.
+
+Requires **Node.js 24+**, npm/npx, Git, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
+
+Run directly from the repository’s `main` branch with `npx`; no manual clone, packaging or npm publication is needed. Start in your MCP server’s project directory:
+
+```sh
+cd /path/to/your/mcp-server
+```
+
+Add these settings to that directory's `.env`:
+
+```dotenv
+NGROK_AUTHTOKEN=your_ngrok_agent_authtoken
+OWNER_EMAIL=you@example.com
+# Your existing server’s HTTP MCP endpoint, including its path.
+MCP_URL=http://127.0.0.1:3001/mcp
+```
+
+Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The SDK needs this value even if the ngrok CLI is already signed in.
+
+Start your MCP server as usual, then run:
+
+```sh
+npx --yes \
+  --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main \
+  mcp-oauth-provider
+```
+
+`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your MCP server needs no package changes.
+
+Replace `#main` with a release tag or commit SHA to pin a revision.
+
+The command prints the app, MCP and debug URLs and opens the protected debug page in your default browser. Add `--no-debug` to skip automatic opening; the protected page remains available. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your MCP server and any optional web app keep running.
+
+Set `MCP_URL` to your server’s actual endpoint (default `http://127.0.0.1:3001/mcp`). If you also have a web app, set `APP_URL` to its origin:
+
+```dotenv
+# Optional web app; not needed for MCP connections.
+APP_URL=http://127.0.0.1:3000
+# Optional; omit to let ngrok allocate the public URL.
+# NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
+```
+
+Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
+
+The provider reads `.env` from the **working directory**. Existing environment variables take precedence. No `.mjs` or YAML configuration needs editing; `.mjs` files are the implementation. Use `--help` for settings or `--version` for the package version.
+
+## Connect Codex and call a tool
+
+Replace `https://your-ngrok-host/mcp` with the public **MCP** URL printed by the provider. Use that public URL, not the private upstream in `MCP_URL`.
+
+```sh
+codex mcp add my-server --url https://your-ngrok-host/mcp
+codex mcp login my-server
+codex
+```
+
+Sign in with the Google account in `OWNER_EMAIL` and approve the connection. Ask Codex to list the tools from `my-server`, then call one of your server’s tools. Approve the tool call if prompted and verify its actual result.
+
+The upstream must accept HTTP MCP requests without a separate bearer token. This provider removes its access token before forwarding; it does not sign in to another OAuth-protected MCP service. Stdio servers need an HTTP transport before they can be used here.
+
+A separate web app is optional. If none is running at `APP_URL`, the printed app URL and app reachability check may fail; this does not prevent MCP connections. Use `/mcp` for clients and `/mcp-debug` for diagnostics.
+
+## What runs where
+
+```text
+Codex -> public ngrok /mcp -> provider forwarding adapter -> your HTTP MCP server
+
+One public ngrok URL
+  /mcp          -> Traffic Policy validates token -> private MCP route
+  OAuth routes  -> local provider issues tokens and handles consent
+  /mcp-debug    -> Google-protected connection status
+  other paths   -> optional existing web app
+```
+
+The CLI uses the ngrok Node SDK to start **one public endpoint and two internal endpoints**. JWT signature, issuer, audience, scope and time checks run in Traffic Policy. A small local forwarding adapter provides useful upstream errors; it does not implement MCP tools or change your server.
+
+The provider also serves the approval page; your MCP server needs no authorization route. It grants one connection permission (`mcp:use`), allowing the client to call the tools your MCP server exposes. It does not implement app-specific read/write permissions.
+
+Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/auth/*`, `/token`, `/reg`, `/jwks`, `/interaction/*`, the provider's OAuth/MCP `/.well-known/` discovery paths, and ngrok's `/ngrok/*` login callbacks. Other app paths and query strings pass through. The configured non-root MCP path is also reserved from app fallthrough, including case and encoded variants, so hostname aliases cannot bypass authorization.
 
 ## Try with Docker Compose
 
@@ -39,12 +123,12 @@ Docker pulls the provider image and starts a minimal Python HTTP MCP server with
 
 **Connect clients to the printed public HTTPS ngrok URL ending in `/mcp`, not localhost or `http://mcp:8000/mcp`.** Localhost may appear during the browser OAuth callback; that callback is not the MCP server address.
 
-The commands below use the current test endpoint, `https://mcp-oauth-compose.ngrok.video/mcp`. For your own stack, replace it with the printed MCP URL.
+Replace `https://your-ngrok-host/mcp` below with the public MCP URL printed by your provider.
 
 For Codex, open a second terminal:
 
 ```sh
-codex mcp add hello-compose --url https://mcp-oauth-compose.ngrok.video/mcp
+codex mcp add hello-compose --url https://your-ngrok-host/mcp
 codex
 ```
 
@@ -53,7 +137,7 @@ Complete browser sign-in and approve the connection. If adding did not start sig
 For Claude Code:
 
 ```sh
-claude mcp add --transport http hello-compose https://mcp-oauth-compose.ngrok.video/mcp
+claude mcp add --transport http hello-compose https://your-ngrok-host/mcp
 claude mcp login hello-compose
 claude
 ```
@@ -65,66 +149,6 @@ Ask either client:
 Approve the tool call if prompted. Expect **`Hello from Python!`**. The provider hosts sign-in, approval and token handling; the downstream MCP server needs no OAuth routes, provider imports or token-handling code. It only needs an existing HTTP MCP endpoint reachable by the provider. No separate app is required; stdio servers are outside this tool.
 
 See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md) for shutdown and reconnecting after a provider restart.
-
-## Run with npx
-
-Requires **Node.js 24+**, npm/npx, Git, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
-
-Run directly from the repository’s `main` branch with `npx`; no manual clone, packaging or npm publication is needed. Start in your app directory:
-
-```sh
-cd /path/to/your/existing-app
-```
-
-Add these settings to that directory's `.env`:
-
-```dotenv
-NGROK_AUTHTOKEN=your_ngrok_agent_authtoken
-OWNER_EMAIL=you@example.com
-```
-
-Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The SDK needs this value even if the ngrok CLI is already signed in.
-
-Start your app and MCP server as usual, then run:
-
-```sh
-npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider
-```
-
-`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes.
-
-Replace `#main` with a release tag or commit SHA to pin a revision.
-
-The command prints the app, MCP and debug URLs and opens the protected debug page in your default browser. Add `--no-debug` to skip automatic opening; the protected page remains available. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your app and MCP processes keep running.
-
-The defaults are `http://127.0.0.1:3000` for the app and `http://127.0.0.1:3001/mcp` for MCP. If yours differ, add:
-
-```dotenv
-APP_URL=http://127.0.0.1:3000
-MCP_URL=http://127.0.0.1:3001/mcp
-# Optional; omit to let ngrok allocate the public URL.
-# NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
-```
-
-Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
-
-The provider reads `.env` from the **working directory**. Existing environment variables take precedence. No `.mjs` or YAML configuration needs editing; `.mjs` files are the implementation. Use `--help` for settings or `--version` for the package version.
-
-## What runs where
-
-```text
-One public ngrok URL
-  /mcp          -> Traffic Policy validates token -> private MCP route
-  OAuth routes  -> local provider issues tokens and handles consent
-  /mcp-debug    -> Google-protected connection status
-  other paths   -> existing app
-```
-
-The CLI uses the ngrok Node SDK to start **one public endpoint and two internal endpoints**. JWT signature, issuer, audience, scope and time checks run in Traffic Policy. A small local forwarding adapter provides useful upstream errors; it does not implement MCP tools or change your server.
-
-The provider also serves the approval page; your app needs no authorization route. It grants one connection permission (`mcp:use`), allowing the client to call the tools your MCP server exposes. It does not implement app-specific read/write permissions.
-
-Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/auth/*`, `/token`, `/reg`, `/jwks`, `/interaction/*`, the provider's OAuth/MCP `/.well-known/` discovery paths, and ngrok's `/ngrok/*` login callbacks. Other app paths and query strings pass through. The configured non-root MCP path is also reserved from app fallthrough, including case and encoded variants, so hostname aliases cannot bypass authorization.
 
 ## Start alongside Python or Node
 
@@ -181,7 +205,7 @@ A reachability result such as HTTP 405 means an HTTP server answered; it does **
 
 Use [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-inspector) for gateway-level requests and routing. The embedded SDK does not provide the ngrok CLI's local port-4040 inspector. The debug page stores only status and duration, never request bodies, tokens, cookies or authorization codes. Full captures in Traffic Inspector can contain sensitive OAuth traffic; control access and capture settings accordingly.
 
-## Demo limits
+## Development limits
 
 Access tokens last 90 days. Rotating refresh tokens share the same 90-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
 
