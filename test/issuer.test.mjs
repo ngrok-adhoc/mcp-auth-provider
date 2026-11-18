@@ -154,6 +154,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
         const html = await page.text();
         assert.match(html, /<title>MCP OAuth Provider<\/title>/);
         assert.match(html, /wants to connect to your MCP server/);
+        assert.match(html, /Access lasts up to 90 days/);
         assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
         assert.doesNotMatch(html, /<img|<script|ngrok/);
         assert.equal((html.match(/<form\b/g) ?? []).length, 1);
@@ -204,7 +205,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   const exchanged = await exchange(authorizationCode, verifier);
   assert.equal(exchanged.status, 200, await exchanged.clone().text());
   const token = await exchanged.json();
-  assert.equal(token.expires_in, 7 * 24 * 60 * 60);
+  assert.equal(token.expires_in, 90 * 24 * 60 * 60);
   assert.equal(typeof token.refresh_token, "string");
   const claims = JSON.parse(Buffer.from(token.access_token.split(".")[1], "base64url"));
   const [header, payload, signature] = token.access_token.split(".");
@@ -220,7 +221,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   assert.equal(claims.aud, resource);
   assert.equal(claims.sub, "owner");
   assert.equal(claims.scope, "mcp:use");
-  assert.equal(claims.exp - claims.iat, 7 * 24 * 60 * 60);
+  assert.equal(claims.exp - claims.iat, 90 * 24 * 60 * 60);
   const refresh = (value, extra = {}) =>
     request("/token", {
       method: "POST",
@@ -255,7 +256,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   const renewed = await refresh(token.refresh_token);
   assert.equal(renewed.status, 200, await renewed.clone().text());
   const renewedToken = await renewed.json();
-  assert.equal(renewedToken.expires_in, 7 * 24 * 60 * 60 - 301);
+  assert.equal(renewedToken.expires_in, 90 * 24 * 60 * 60 - 301);
   assert.notEqual(renewedToken.refresh_token, token.refresh_token);
   const renewedClaims = JSON.parse(
     Buffer.from(renewedToken.access_token.split(".")[1], "base64url"),
@@ -291,25 +292,25 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   const lifetimeClaims = JSON.parse(
     Buffer.from(lifetimeToken.access_token.split(".")[1], "base64url"),
   );
-  assert.equal(lifetimeClaims.exp - lifetimeClaims.iat, 7 * 24 * 60 * 60);
+  assert.equal(lifetimeClaims.exp - lifetimeClaims.iat, 90 * 24 * 60 * 60);
   now += 2 * 24 * 60 * 60 * 1000;
   const afterBrowserSession = await refresh(lifetimeToken.refresh_token);
   assert.equal(afterBrowserSession.status, 200, await afterBrowserSession.clone().text());
   const middleToken = await afterBrowserSession.json();
   assert.notEqual(middleToken.refresh_token, lifetimeToken.refresh_token);
-  assert.equal(middleToken.expires_in, 5 * 24 * 60 * 60);
+  assert.equal(middleToken.expires_in, 88 * 24 * 60 * 60);
   assert.equal(
     JSON.parse(Buffer.from(middleToken.access_token.split(".")[1], "base64url")).exp,
     lifetimeClaims.exp,
   );
-  now = issuedAt + (7 * 24 * 60 * 60 - 60) * 1000;
+  now = issuedAt + (90 * 24 * 60 * 60 - 60) * 1000;
   const nearLimit = await refresh(middleToken.refresh_token);
   assert.equal(nearLimit.status, 200, await nearLimit.clone().text());
   const lastToken = await nearLimit.json();
   assert.equal(lastToken.expires_in, 60);
   const lastClaims = JSON.parse(Buffer.from(lastToken.access_token.split(".")[1], "base64url"));
   assert.equal(lastClaims.exp, lifetimeClaims.exp);
-  now = issuedAt + (7 * 24 * 60 * 60 + 1) * 1000;
+  now = issuedAt + (90 * 24 * 60 * 60 + 1) * 1000;
   assert.ok(lastClaims.exp < Math.floor(now / 1000));
   await rejected(await refresh(lastToken.refresh_token), "invalid_grant");
 });

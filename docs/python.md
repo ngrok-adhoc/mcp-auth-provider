@@ -13,7 +13,7 @@ The Compose example below uses the provider image from GitHub Container Registry
 
 Requires Docker with Compose, an ngrok account with the required paid endpoints/Traffic Policy actions, and a Google account for sign-in. No custom Google application is needed.
 
-> Publication pending: `ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0` is the planned first image release. The pull-based steps below require that release to be published.
+> The image is published but currently private. Registry pulls require an authorized GitHub login with package-read access and any organization SSO approval. To use a local build instead, follow [Build the image locally](../README.md#build-the-image-locally), then start Compose with `--pull never`.
 
 Create a new directory:
 
@@ -72,7 +72,7 @@ services:
       start_period: 30s
 
   provider:
-    image: ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0
+    image: ghcr.io/ngrok-adhoc/mcp-oauth-provider:latest
     init: true
     depends_on:
       mcp:
@@ -86,6 +86,8 @@ services:
 ```
 
 Start the stack. Docker pulls the images automatically; no repository checkout or local build is needed:
+
+For a registry pull, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` with a classic PAT that has package-read access and the required organization SSO authorization. Local builds use `--pull never` instead.
 
 ```sh
 docker compose --env-file .env up -d
@@ -131,7 +133,7 @@ Reload `/mcp-debug` after the call: it should show a successful forwarding respo
 
 ## Keep running, stop or reconnect
 
-Access tokens last seven days, and rotating refresh tokens share that same seven-day authorization window. Renewed access tokens are capped at the window’s remaining time; a copied bearer token remains usable until its expiry. Provider keys and OAuth state are in memory, so restarting or rebuilding requires a fresh client login. After a restart, use `codex mcp logout hello-compose` then `codex mcp login hello-compose`, or the equivalent `claude mcp logout` / `claude mcp login` commands.
+Access tokens last 90 days, and rotating refresh tokens share that same 90-day authorization window. Renewed access tokens are capped at the window’s remaining time; a copied bearer token remains usable until its expiry. Provider keys and OAuth state are in memory, so restarting or rebuilding requires a fresh client login. After a restart, use `codex mcp logout hello-compose` then `codex mcp login hello-compose`, or the equivalent `claude mcp logout` / `claude mcp login` commands.
 
 Restarting only the `mcp` service keeps authorization intact. View startup URLs and errors with:
 

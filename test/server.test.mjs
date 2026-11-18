@@ -166,6 +166,30 @@ test("offline upstream returns a useful 503 and recovers without provider restar
   assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`)).text(), "recovered");
 });
 
+test("established MCP requests can wait beyond the app deadline for response headers", async (t) => {
+  let finish;
+  let received;
+  const waiting = new Promise((resolve) => (received = resolve));
+  const { mcpProxyUrl } = await fixture(t, (_req, res) => {
+    finish = () => res.end("slow tool result");
+    received();
+  });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const response = new Promise((resolve, reject) => {
+    const req = httpRequest(`${mcpProxyUrl}/mcp`, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  await waiting;
+  t.mock.timers.tick(300001);
+  finish();
+  assert.deepEqual(await response, { status: 200, body: "slow tool result" });
+});
+
 test("MCP responses stream before the upstream closes", async (t) => {
   let finish;
   const { mcpProxyUrl } = await fixture(t, (_req, res) => {

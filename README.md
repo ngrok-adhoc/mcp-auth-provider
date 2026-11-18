@@ -4,11 +4,13 @@ Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, 
 
 This is a lightweight developer tool: ngrok Traffic Policy handles access checks and routing; the provider handles OAuth registration, consent and tokens.
 
+[Run with npx from Git](#run-with-npx), or use Docker with the [Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md).
+
 ## Try with Docker Compose
 
 Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python, Node installation or repository checkout is needed.
 
-> Publication pending: `ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0` is the planned first image release. The pull-based steps below require that release to be published.
+> The image is published but currently private. Registry pulls require an authorized GitHub login with package-read access and any organization SSO approval. For a local build, follow [Build the image locally](#build-the-image-locally).
 
 ```sh
 mkdir mcp-demo
@@ -24,7 +26,9 @@ OWNER_EMAIL=your_google_email
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
-Use your **ngrok agent authtoken**, not an API key. Keep `.env` private and out of Git. Copy the single [Compose example from the tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md#start-the-stack) into `compose.yaml` in the same directory, then run:
+Use your **ngrok agent authtoken**, not an API key. Keep `.env` private and out of Git. Copy the single [Compose example from the tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md#start-the-stack) into `compose.yaml` in the same directory, then run:
+
+For a registry pull, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` with a classic PAT that has package-read access and the required organization SSO authorization. Local builds use `--pull never` instead.
 
 ```sh
 docker compose --env-file .env up -d
@@ -60,22 +64,13 @@ Ask either client:
 
 Approve the tool call if prompted. Expect **`Hello from Python!`**. The provider hosts sign-in, approval and token handling; the downstream MCP server needs no OAuth routes, provider imports or token-handling code. It only needs an existing HTTP MCP endpoint reachable by the provider. No separate app is required; stdio servers are outside this tool.
 
-See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md) for shutdown and reconnecting after a provider restart.
+See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md) for shutdown and reconnecting after a provider restart.
 
-## Run
+## Run with npx
 
-Requires **Node.js 24+**, npm/npx, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
+Requires **Node.js 24+**, npm/npx, Git, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
 
-For now, use a local package; it has not been published to npm. Prepare it once from the source checkout:
-
-```sh
-git clone --branch mcp-oauth-provider-cli https://github.com/ngrok-adhoc/mcp-oauth-provider.git
-cd mcp-oauth-provider
-npm ci
-npm pack
-```
-
-This creates `mcp-oauth-provider-0.1.0.tgz`. If someone has already provided that file, skip the checkout and packaging steps. Then switch to your app directory:
+Run directly from the repository’s `main` branch with `npx`; no manual clone, packaging or npm publication is needed. Start in your app directory:
 
 ```sh
 cd /path/to/your/existing-app
@@ -93,10 +88,12 @@ Keep `.env` out of Git. Use your **agent authtoken**, not an ngrok API key. The 
 Start your app and MCP server as usual, then run:
 
 ```sh
-npx --yes --package=/absolute/path/to/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider
+npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider
 ```
 
-`npx` installs the package's dependencies automatically; your app needs no additional install step.
+`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes.
+
+Replace `#main` with a release tag or commit SHA to pin a revision.
 
 The command prints the app, MCP and debug URLs and opens the protected debug page in your default browser. Add `--no-debug` to skip automatic opening; the protected page remains available. Add the printed `/mcp` URL to your OAuth-capable MCP client, sign in with the configured Google account, and approve access. Stop the provider with **Ctrl+C**; your app and MCP processes keep running.
 
@@ -136,18 +133,37 @@ Your MCP application never imports this package. A shell process runner can star
 ```sh
 npx --yes --package=concurrently concurrently --kill-others \
   "python server.py" \
-  "npx --yes --package=/absolute/path/mcp-oauth-provider-0.1.0.tgz mcp-oauth-provider"
+  "npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider"
 ```
 
 Use your existing HTTP server command (for example `node server.mjs`) instead of `python server.py`. Add the app command as a third entry if it runs separately. Put the command in a project script or task file if you want a short alias such as `just dev`; no MCP source changes are needed.
 
 ## Docker and background use
 
-Use `ghcr.io/ngrok-adhoc/mcp-oauth-provider:0.1.0` with the [tutorial's Compose example](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/mcp-oauth-provider-cli/docs/python.md). It runs in the background with `up -d`; use `logs -f provider` to see connection URLs and `down` to stop the stack.
+Use `ghcr.io/ngrok-adhoc/mcp-oauth-provider:latest` with the [tutorial's Compose example](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md). It runs in the background with `up -d`; use `logs -f provider` to see connection URLs and `down` to stop the stack.
 
 The image runs as a nonroot user, opens no local ports, and defaults to `--no-debug` for headless use. Set `APP_URL` and `MCP_URL` to trusted services on your Compose network, such as `http://app:3000` and `http://mcp:8000/mcp`. Container `localhost` means the provider container. Host services can use `host.docker.internal`; on Linux, a host-gateway mapping still cannot reach a listener bound only to host loopback.
 
 The provider can run beside an existing MCP container; the MCP server never imports this package. Process supervision does not make OAuth state persistent. No custom supervisor or OS service installer is included.
+
+## Build the image locally
+
+Build from `main` and tag the image name used by the tutorial:
+
+```sh
+git clone --branch main https://github.com/ngrok-adhoc/mcp-oauth-provider.git
+cd mcp-oauth-provider
+docker build --tag ghcr.io/ngrok-adhoc/mcp-oauth-provider:latest .
+```
+
+Then return to your separate consumer directory containing `.env` and the copied `compose.yaml`:
+
+```sh
+cd /path/to/mcp-demo
+docker compose --env-file .env up -d --pull never
+```
+
+`--pull never` uses the locally built image. Make sure `python:3.13-slim` is available locally first (`docker pull python:3.13-slim`). This verifies the local build, not registry access.
 
 ## Diagnose a connection
 
@@ -167,7 +183,9 @@ Use [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-inspector) for
 
 ## Demo limits
 
-Access tokens last seven days. Rotating refresh tokens share the same seven-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
+Access tokens last 90 days. Rotating refresh tokens share the same 90-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
+
+MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. App response headers and WebSocket handshakes get five minutes. Consent and browser sessions last one day; authorization codes last 15 minutes.
 
 - One Google owner, one HTTP MCP resource, and HTTP loopback client callbacks. Hosted callbacks, multiple MCPs and stdio translation are outside this tool.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
@@ -194,7 +212,7 @@ npm run tag-release -- 0.1.0
 
 The command creates an annotated `v0.1.0` tag without overwriting existing tags. Its push runs **Publish image**, publishing Linux amd64/arm64 images to `ghcr.io/ngrok-adhoc/mcp-oauth-provider` with `0.1.0`, `v0.1.0`, a commit SHA tag and `latest`. Main-branch builds only warm the build cache. Wait for the image workflow to succeed before updating tutorial image versions.
 
-For the first publication, an organization package admin must set the GHCR package visibility to **Public** and verify an anonymous pull; a public source repository alone does not make the image public. No registry login should be required by tutorial users.
+The GHCR package remains private. Consumers need package-read access and an authorized registry login; organization SSO approval may also be required. Public visibility and anonymous-pull verification are deferred. A successful publishing workflow does not prove that a consumer can pull the image.
 
 If an automated release creates its tag using `GITHUB_TOKEN`, explicitly dispatch the publishing workflow at that tag because that token's tag push does not trigger another workflow:
 
