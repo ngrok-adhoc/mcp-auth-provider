@@ -4,6 +4,8 @@ Connect an existing local HTTP MCP server through ngrok-managed Google sign-in, 
 
 This is a lightweight developer tool: ngrok Traffic Policy handles access checks and routing; the provider handles OAuth registration, consent and tokens.
 
+[Run with npx from Git](#run-with-npx), or use Docker with the [Compose tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md).
+
 ## Try with Docker Compose
 
 Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python, Node installation or repository checkout is needed.
@@ -64,7 +66,7 @@ Approve the tool call if prompted. Expect **`Hello from Python!`**. The provider
 
 See the [Compose guide](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md) for shutdown and reconnecting after a provider restart.
 
-## Run
+## Run with npx
 
 Requires **Node.js 24+**, npm/npx, Git, and an ngrok account with paid internal endpoints and the required Traffic Policy actions. No separate ngrok executable, Google Cloud project or custom OAuth application is needed.
 
@@ -89,12 +91,7 @@ Start your app and MCP server as usual, then run:
 npx --yes --package=git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main mcp-oauth-provider
 ```
 
-`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes. To install the command globally instead:
-
-```sh
-npm install --global git+https://github.com/ngrok-adhoc/mcp-oauth-provider.git#main
-mcp-oauth-provider
-```
+`npx` fetches the package from GitHub and installs its dependencies in npm’s cache; your app needs no package changes.
 
 Replace `#main` with a release tag or commit SHA to pin a revision.
 
