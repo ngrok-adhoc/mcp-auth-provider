@@ -133,7 +133,7 @@ Reload `/mcp-debug` after the call: it should show a successful forwarding respo
 
 ## Keep running, stop or reconnect
 
-Access tokens last seven days, and rotating refresh tokens share that same seven-day authorization window. Renewed access tokens are capped at the window’s remaining time; a copied bearer token remains usable until its expiry. Provider keys and OAuth state are in memory, so restarting or rebuilding requires a fresh client login. After a restart, use `codex mcp logout hello-compose` then `codex mcp login hello-compose`, or the equivalent `claude mcp logout` / `claude mcp login` commands.
+Access tokens last 90 days, and rotating refresh tokens share that same 90-day authorization window. Renewed access tokens are capped at the window’s remaining time; a copied bearer token remains usable until its expiry. Provider keys and OAuth state are in memory, so restarting or rebuilding requires a fresh client login. After a restart, use `codex mcp logout hello-compose` then `codex mcp login hello-compose`, or the equivalent `claude mcp logout` / `claude mcp login` commands.
 
 Restarting only the `mcp` service keeps authorization intact. View startup URLs and errors with:
 

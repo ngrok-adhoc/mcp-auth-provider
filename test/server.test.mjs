@@ -166,14 +166,28 @@ test("offline upstream returns a useful 503 and recovers without provider restar
   assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`)).text(), "recovered");
 });
 
-test("MCP tools may take more than ten seconds before sending response headers", async (t) => {
-  const { mcpProxyUrl } = await fixture(t, async (_req, res) => {
-    await new Promise((resolve) => setTimeout(resolve, 11000));
-    res.end("slow tool result");
+test("established MCP requests can wait beyond the app deadline for response headers", async (t) => {
+  let finish;
+  let received;
+  const waiting = new Promise((resolve) => (received = resolve));
+  const { mcpProxyUrl } = await fixture(t, (_req, res) => {
+    finish = () => res.end("slow tool result");
+    received();
   });
-  const response = await fetch(`${mcpProxyUrl}/mcp`);
-  assert.equal(response.status, 200);
-  assert.equal(await response.text(), "slow tool result");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const response = new Promise((resolve, reject) => {
+    const req = httpRequest(`${mcpProxyUrl}/mcp`, (res) => {
+      let body = "";
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+  await waiting;
+  t.mock.timers.tick(300001);
+  finish();
+  assert.deepEqual(await response, { status: 200, body: "slow tool result" });
 });
 
 test("MCP responses stream before the upstream closes", async (t) => {

@@ -188,7 +188,9 @@ Use [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-inspector) for
 
 ## Demo limits
 
-Access tokens last seven days. Rotating refresh tokens share the same seven-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
+Access tokens last 90 days. Rotating refresh tokens share the same 90-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until its expiry. Keys, registrations, grants and sessions are in memory, so restarting requires client login. This is a local development tool.
+
+MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. App response headers and WebSocket handshakes get five minutes. Consent and browser sessions last one day; authorization codes last 15 minutes.
 
 - One Google owner, one HTTP MCP resource, and HTTP loopback client callbacks. Hosted callbacks, multiple MCPs and stdio translation are outside this tool.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
