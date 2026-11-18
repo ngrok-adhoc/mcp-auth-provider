@@ -1,14 +1,13 @@
 # Test end to end with Docker Compose
 
-Start a tiny Python app, an HTTP MCP `hello` tool and the OAuth provider with one Compose file. You need no existing app or MCP server, and no local Python or Node installation.
+Start an HTTP MCP `hello` server and the OAuth provider with one Compose file. You need no existing MCP server and no local Python or Node installation. There is no demo web app.
 
 ```text
 Codex / Claude Code → https://your-ngrok-host/mcp
                       ngrok Traffic Policy → provider → mcp:8000/mcp
-Browser             → https://your-ngrok-host/ → provider → mcp:8000/
 ```
 
-The [Compose file](compose.yaml) injects the Python code into an official Python container and installs the pinned official MCP SDK. App and MCP share one process; Python contains no OAuth or provider imports. Neither container publishes a host port. The only public entry is ngrok.
+The [Compose file](compose.yaml) injects the Python code into an official Python container and installs the pinned official MCP SDK. Python contains no OAuth or provider imports. Neither container publishes a host port. The only public entry is ngrok.
 
 ## Start the stack
 
@@ -36,7 +35,7 @@ Keep `.env` private and ignored. Run from the checkout root:
 docker compose --env-file .env -f docs/compose.yaml up --build
 ```
 
-Wait for the provider's printed app, MCP and debug URLs. Open the app URL: expect **My Python app**. The Python health check must pass before the provider starts. The first run downloads images and Python dependencies; no extra source files are needed.
+Wait for the provider’s printed **MCP** and **Debug** URLs. Use the public HTTPS MCP URL ending in `/mcp`, not `localhost` or the private Docker service address. The TCP health check must pass before the provider starts. The first run downloads images and Python dependencies; no extra source files are needed.
 
 Open the printed `/mcp-debug` URL yourself; the headless container skips browser opening. Sign in as `OWNER_EMAIL`. HTTP reachability alone does not verify MCP—call the tool next.
 
@@ -67,9 +66,11 @@ claude
 
 Complete the browser flow, then ask the same question. In Claude Code, `/mcp` also shows connection status and an **Authenticate** action. These commands follow the [Claude Code MCP guide](https://code.claude.com/docs/en/mcp).
 
+The MCP client may open a `localhost` callback during browser sign-in; that is normal and is not the MCP server URL.
+
 The provider hosts the approval page. Its single connection permission allows the client to use the MCP tools; your Python app implements no authorization route or permission UI. Client tool-call confirmations still apply.
 
-Reload `/mcp-debug` after the call: it should show a successful forwarding response. A plain `curl` to public `/mcp` without a token should return **401**; that is the expected access check. The app page remains at `/`.
+Reload `/mcp-debug` after the call: it should show a successful forwarding response. A plain `curl` to public `/mcp` without a token should return **401**; that is the expected access check. This MCP-only example has no app page at `/`; a 404 there is expected.
 
 ## Keep running, stop or reconnect
 
