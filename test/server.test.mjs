@@ -203,6 +203,79 @@ test("case-insensitive MCP routes cannot bypass auth through loopback host alias
 });
 
 test(
+  "root-mounted MCP blocks all app fallthrough even through hostname aliases",
+  { timeout: 5000 },
+  async (t) => {
+    let requests = 0;
+    let upgrades = 0;
+    const upstream = createServer(async (req, res) => {
+      requests++;
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ url: req.url, body, result: "PRIVATE MCP" }));
+    });
+    upstream.on("upgrade", (_req, socket) => {
+      upgrades++;
+      socket.end(
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
+      );
+    });
+    const url = await listen(upstream);
+    const appUrl = new URL(url);
+    appUrl.hostname = "localhost.";
+    const servers = await startServers({
+      appUrl: appUrl.href,
+      mcpUrl: `${url}/`,
+      issuer: "https://provider.example",
+      gatewaySecret,
+      jwks,
+    });
+    t.after(async () => {
+      await servers.close();
+      await close(upstream);
+    });
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" });
+    const alias = await fetch(appUrl, { method: "POST", body });
+    assert.equal((await alias.json()).result, "PRIVATE MCP");
+    requests = 0;
+    for (const path of ["/", "/anything"]) {
+      assert.equal(
+        (await fetch(`${servers.helperUrl}${path}`, { method: "POST", body })).status,
+        404,
+      );
+      const status = await new Promise((resolve, reject) => {
+        const req = httpRequest(
+          `${servers.helperUrl}${path}`,
+          { headers: { connection: "Upgrade", upgrade: "websocket" } },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          },
+        );
+        req.on("error", reject);
+        req.on("upgrade", (_res, socket) => {
+          socket.destroy();
+          reject(new Error("Root MCP alias was exposed through an app upgrade"));
+        });
+        req.end();
+      });
+      assert.equal(status, 404, path);
+    }
+    assert.equal(requests, 0);
+    assert.equal(upgrades, 0);
+    const authorized = await fetch(`${servers.mcpProxyUrl}/mcp`, {
+      method: "POST",
+      body,
+      headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
+    });
+    assert.equal(authorized.status, 200);
+    assert.deepEqual(await authorized.json(), { url: "/", body, result: "PRIVATE MCP" });
+    assert.equal(requests, 1);
+  },
+);
+
+test(
   "app WebSocket upgrades preserve bidirectional bytes and deny reserved paths",
   { timeout: 5000 },
   async (t) => {
