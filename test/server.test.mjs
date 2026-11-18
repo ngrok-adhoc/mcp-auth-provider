@@ -166,6 +166,16 @@ test("offline upstream returns a useful 503 and recovers without provider restar
   assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`)).text(), "recovered");
 });
 
+test("MCP tools may take more than ten seconds before sending response headers", async (t) => {
+  const { mcpProxyUrl } = await fixture(t, async (_req, res) => {
+    await new Promise((resolve) => setTimeout(resolve, 11000));
+    res.end("slow tool result");
+  });
+  const response = await fetch(`${mcpProxyUrl}/mcp`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "slow tool result");
+});
+
 test("MCP responses stream before the upstream closes", async (t) => {
   let finish;
   const { mcpProxyUrl } = await fixture(t, (_req, res) => {
