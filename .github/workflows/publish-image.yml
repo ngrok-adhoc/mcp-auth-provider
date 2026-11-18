@@ -1,0 +1,75 @@
+name: Publish image
+
+on:
+  workflow_dispatch:
+  push:
+    # Main warms the cache; only explicit release tags publish an image.
+    branches: [main]
+    tags: ["v*.*.*"]
+    paths:
+      - Dockerfile
+      - package.json
+      - package-lock.json
+      - bin/**
+      - lib/**
+      - .github/workflows/publish-image.yml
+
+concurrency:
+  group: mcp-oauth-provider-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/ngrok-adhoc/mcp-oauth-provider
+
+jobs:
+  publish:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate stable release version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
+             [[ "$RELEASE_TAG" != "v$(node -p 'require("./package.json").version')" ]]; then
+            echo "Release tag must be vMAJOR.MINOR.PATCH and match package.json." >&2
+            exit 1
+          fi
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=ref,event=tag
+            type=match,pattern=^v(.*)$,group=1
+            type=sha,format=long
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - name: Build and publish image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=mcp-oauth-provider
+          cache-to: type=gha,scope=mcp-oauth-provider,mode=max
+          provenance: ${{ startsWith(github.ref, 'refs/tags/') }}
+          sbom: ${{ startsWith(github.ref, 'refs/tags/') }}
