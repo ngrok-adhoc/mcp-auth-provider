@@ -51,7 +51,8 @@ export function ConsentPage({
           </header>
           <div class="permission">
             <p>
-              This tool uses ngrok to OAuth to your existing HTTP MCP server and forward authorized requests to it.
+              This tool uses ngrok to OAuth to your existing HTTP MCP server and forward authorized
+              requests to it.
             </p>
             <p class="muted">
               Approved users share the same permissions, including access to all read and write

@@ -321,7 +321,7 @@ async function checkOAuth(
         assert.doesNotMatch(html, /<img src=x|<script|<style/);
         assert.match(
           html,
-          /This developer tool uses ngrok to add OAuth to your existing HTTP MCP server and forward authorized requests to it\./,
+          /This tool uses ngrok to OAuth to your existing HTTP MCP server and forward authorized requests to it\./,
         );
         assert.match(html, /rel="stylesheet" href="\/interaction\/consent\.css"/);
         assert.equal((html.match(/<form\b/g) ?? []).length, 1);
