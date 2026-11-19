@@ -54,6 +54,8 @@ APP_URL=http://127.0.0.1:3000
 
 Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_SERVER_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
 
+If the MCP server uses an ngrok internal endpoint in the same account, set `MCP_SERVER_BINDING=internal` and use its `.internal` URL ending in `/mcp` for `MCP_SERVER_URL`. The gateway forwards authenticated requests to that endpoint. If the upstream checks the HTTP Host header, allow the public provider hostname.
+
 The provider reads `.env` from the **working directory**. Existing environment variables take precedence over `.env` for each setting. If you previously configured an upstream using `MCP_URL`, rename that setting to `MCP_SERVER_URL`. Use `--help` for settings or `--version` for the package version.
 
 ## Keep OAuth connections across restarts

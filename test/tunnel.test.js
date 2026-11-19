@@ -153,6 +153,37 @@ test("an endpoint failure closes earlier listeners and preserves the actionable 
   assert.equal(fake.session.closed, true);
 });
 
+test("routes validated MCP requests to an existing ngrok internal endpoint", async (t) => {
+  const fake = fakeSdk();
+  t.mock.method(https, "get", (_url, _options, callback) => {
+    const request = new EventEmitter();
+    request.setTimeout = () => {};
+    queueMicrotask(() => callback({ statusCode: 200, resume() {} }));
+    return request;
+  });
+  const internalMcpOrigin = "https://bowie.internal";
+  const tunnels = await startTunnels({
+    ...configuration,
+    internalMcpOrigin,
+    session: fake.session,
+  });
+  t.after(() => tunnels.close());
+
+  assert.deepEqual(
+    fake.calls.map((call) => call.binding),
+    ["public", "internal"],
+  );
+  const rule = fake.calls[0].policy.on_http_request.find(({ actions }) =>
+    actions.some(({ type }) => type === "forward-internal"),
+  );
+  assert.match(rule.expressions[0], /status_code == 200/);
+  assert.deepEqual(rule.actions.slice(0, 3), [
+    { type: "remove-headers", config: { headers: ["authorization"] } },
+    { type: "url-rewrite", config: { from: "^([^?]+)\\?.*$", to: "$1" } },
+    { type: "forward-internal", config: { url: internalMcpOrigin, on_error: "continue" } },
+  ]);
+});
+
 test("rejects non-loopback upstreams and foreign signing-key URLs before exposing anything", async () => {
   for (const changes of [
     { helperUrl: "http://external.example" },

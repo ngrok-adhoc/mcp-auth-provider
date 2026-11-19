@@ -169,6 +169,14 @@ export async function readConfig({ cwd = process.cwd(), env = process.env } = {}
       throw new Error("NGROK_URL must be an HTTPS origin without a path.");
     publicUrl = url.origin;
   }
+  const mcpUrl = new URL(upstream("MCP_SERVER_URL"));
+  const mcpBinding = values.MCP_SERVER_BINDING?.trim();
+  if (mcpBinding && mcpBinding !== "internal")
+    throw new Error("MCP_SERVER_BINDING must be internal or unset.");
+  if (mcpBinding && (!mcpUrl.hostname.endsWith(".internal") || mcpUrl.pathname !== "/mcp"))
+    throw new Error(
+      "With MCP_SERVER_BINDING=internal, set MCP_SERVER_URL to an ngrok .internal URL ending in /mcp.",
+    );
   return {
     users,
     storage: readStorage(values),
@@ -178,6 +186,7 @@ export async function readConfig({ cwd = process.cwd(), env = process.env } = {}
     authtoken,
     publicUrl,
     appUrl: values.APP_URL ? upstream("APP_URL", true) : undefined,
-    mcpUrl: upstream("MCP_SERVER_URL"),
+    mcpUrl: mcpUrl.href,
+    internalMcpOrigin: mcpBinding ? mcpUrl.origin : undefined,
   };
 }

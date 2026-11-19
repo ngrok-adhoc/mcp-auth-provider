@@ -15,6 +15,7 @@ export function createPolicy({
   validationUrl,
   gatewaySecret,
   users,
+  stripMcpQuery,
   appInternalUrl,
   mcpUpstreamPath,
 }: {
@@ -23,6 +24,7 @@ export function createPolicy({
   validationUrl: string;
   gatewaySecret: string;
   users: AccessEntry[];
+  stripMcpQuery?: boolean;
   appInternalUrl?: string;
   mcpUpstreamPath?: string;
 }) {
@@ -177,6 +179,9 @@ export function createPolicy({
         ],
         actions: [
           { type: "remove-headers", config: { headers: ["authorization"] } },
+          ...(stripMcpQuery
+            ? [{ type: "url-rewrite", config: { from: "^([^?]+)\\?.*$", to: "$1" } }]
+            : []),
           { type: "forward-internal", config: { url: mcpInternalUrl, on_error: "continue" } },
           json(
             {
