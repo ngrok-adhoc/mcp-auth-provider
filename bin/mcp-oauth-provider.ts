@@ -33,6 +33,7 @@ Run this command from your MCP server’s project directory. Settings come from 
   CLAUDE_CIMD      Set to 1 to allow published OAuth identities for hosted Claude and Codex
   APP_URL          Optional website origin for ngrok to forward to
   MCP_SERVER_URL   Existing HTTP(S) MCP server URL, including its path (required)
+  MCP_SERVER_BINDING  Set to internal for an ngrok .internal MCP endpoint
   MCP_SERVER_NAME  Optional MCP server name on the OAuth consent page
   MCP_SERVER_ICON  Optional local image path or HTTPS icon URL on the OAuth consent page
   NGROK_URL        Optional public HTTPS origin; otherwise allocated automatically

@@ -126,6 +126,7 @@ export async function startTunnels({
   helperUrl,
   mcpUrl,
   appUrl,
+  internalMcpOrigin,
   mcpUpstreamUrl,
   gatewaySecret,
   users,
@@ -136,6 +137,7 @@ export async function startTunnels({
   helperUrl: string;
   mcpUrl: string;
   appUrl?: string;
+  internalMcpOrigin?: string;
   mcpUpstreamUrl: string;
   gatewaySecret: string;
   users: AccessEntry[];
@@ -147,7 +149,8 @@ export async function startTunnels({
     helperUrl = localOrigin(helperUrl);
     mcpUrl = localOrigin(mcpUrl);
     const suffix = randomBytes(8).toString("hex");
-    const mcpInternalUrl = `https://mcp-oauth-provider-backend-${suffix}.internal`;
+    const mcpInternalUrl =
+      internalMcpOrigin ?? `https://mcp-oauth-provider-backend-${suffix}.internal`;
     const validationUrl = `https://mcp-oauth-provider-validator-${suffix}.internal`;
     const mcpUpstreamPath = appUrl
       ? normalize(decodeURIComponent(new URL(mcpUpstreamUrl).pathname).replaceAll("\\", "/"))
@@ -166,16 +169,19 @@ export async function startTunnels({
       validationUrl,
       gatewaySecret,
       users,
+      stripMcpQuery: Boolean(internalMcpOrigin),
       appInternalUrl,
       mcpUpstreamPath,
     });
-    listeners.push(
-      await session
-        .httpEndpoint()
-        .domain(new URL(mcpInternalUrl).hostname)
-        .binding("internal")
-        .listenAndForward(mcpUrl),
-    );
+    if (!internalMcpOrigin) {
+      listeners.push(
+        await session
+          .httpEndpoint()
+          .domain(new URL(mcpInternalUrl).hostname)
+          .binding("internal")
+          .listenAndForward(mcpUrl),
+      );
+    }
     if (app && appInternalUrl) {
       listeners.push(
         await session

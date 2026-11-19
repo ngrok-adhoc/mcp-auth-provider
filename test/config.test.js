@@ -109,7 +109,19 @@ test("trusted configured upstreams support Docker host names and service DNS", a
       });
       assert.equal(config.appUrl, new URL(appUrl).href);
       assert.equal(config.mcpUrl, mcpUrl);
+      assert.equal(config.internalMcpOrigin, undefined);
     }
+    const env = { ...credentials, MCP_SERVER_BINDING: "internal" };
+    const internal = await readConfig({
+      cwd,
+      env: { ...env, MCP_SERVER_URL: "https://bowie.internal/mcp" },
+    });
+    assert.equal(internal.internalMcpOrigin, "https://bowie.internal");
+    for (const url of ["http://bowie:3001/mcp", "https://bowie.internal/custom-mcp"])
+      await assert.rejects(
+        readConfig({ cwd, env: { ...env, MCP_SERVER_URL: url } }),
+        /MCP_SERVER_BINDING/,
+      );
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
