@@ -1,4 +1,6 @@
-const json = (body, status_code = 200, headers = {}) => ({
+import type { AccessEntry } from "./config.js";
+
+const json = (body: object, status_code = 200, headers: Record<string, string> = {}) => ({
   type: "custom-response",
   config: {
     status_code,
@@ -7,13 +9,56 @@ const json = (body, status_code = 200, headers = {}) => ({
   },
 });
 
-export function createPolicy({ issuer, mcpInternalUrl, validationUrl, gatewaySecret, ownerEmail }) {
-  if (typeof ownerEmail !== "string" || !ownerEmail.trim())
-    throw new Error("Set OWNER_EMAIL to the Google account allowed to connect.");
+export function createPolicy({
+  issuer,
+  mcpInternalUrl,
+  validationUrl,
+  gatewaySecret,
+  users,
+  appInternalUrl,
+  mcpUpstreamPath,
+}: {
+  issuer: string;
+  mcpInternalUrl: string;
+  validationUrl: string;
+  gatewaySecret: string;
+  users: AccessEntry[];
+  appInternalUrl?: string;
+  mcpUpstreamPath?: string;
+}) {
+  if (!Array.isArray(users) || !users.length) throw new Error("Set at least one entry in USERS.");
   const challenge = `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp", scope="mcp:use"`;
-  const protectedBrowser =
-    "(req.url.path.startsWith('/interaction/') || req.url.path == '/mcp-debug' || req.url.path.startsWith('/mcp-debug/'))";
-  const allowedOwner = `has(actions.ngrok.oauth.identity.email) && actions.ngrok.oauth.identity.email == ${JSON.stringify(ownerEmail)}`;
+  const interaction = "req.url.path.startsWith('/interaction/')";
+  const email = "actions.ngrok.oauth.identity.email";
+  const matches = (entries: AccessEntry[]) =>
+    entries
+      .map((entry) =>
+        typeof entry === "string"
+          ? `${email}.lowerAscii() == ${JSON.stringify(entry)}`
+          : `${email}.lowerAscii().matches(${JSON.stringify(entry.regex)})`,
+      )
+      .join(" || ");
+  const hasEmail = `has(${email}) && ${email} != ''`;
+  const allowedUser = `${hasEmail} && (${matches(users)})`;
+  const reserved = [
+    "/mcp",
+    "/mcp-debug",
+    "/auth",
+    "/token",
+    "/reg",
+    "/jwks",
+    "/interaction",
+    "/ngrok",
+    "/.well-known/openid-configuration",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+    mcpUpstreamPath,
+  ]
+    .filter((path): path is string => Boolean(path))
+    .map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  // Leave ambiguous paths on the helper, where unknown routes return 404.
+  const appPathBlocklist = `//|[\\\\%?#;\\x00-\\x1f\\x7f]|(?:^|/)\\.{1,2}(?:/|$)|^(?:${reserved})(?:/|$)`;
   return {
     on_http_request: [
       {
@@ -25,23 +70,23 @@ export function createPolicy({ issuer, mcpInternalUrl, validationUrl, gatewaySec
         ],
       },
       {
-        expressions: [`${protectedBrowser} || req.url.path.startsWith('/ngrok/')`],
+        expressions: [`${interaction} || req.url.path.startsWith('/ngrok/')`],
         actions: [{ type: "oauth", config: { provider: "google" } }],
       },
       {
-        expressions: [`${protectedBrowser} && !(${allowedOwner})`],
+        expressions: [`${interaction} && !(${allowedUser})`],
         actions: [
           json(
             {
-              error: "owner_required",
-              message: "Sign in with the Google account configured in OWNER_EMAIL.",
+              error: "user_required",
+              message: "Sign in with a Google account permitted by USERS.",
             },
             403,
           ),
         ],
       },
       {
-        expressions: [`${protectedBrowser} && (${allowedOwner})`],
+        expressions: [`${interaction} && (${allowedUser})`],
         actions: [
           { type: "remove-headers", config: { headers: ["authorization"] } },
           {
@@ -137,7 +182,7 @@ export function createPolicy({ issuer, mcpInternalUrl, validationUrl, gatewaySec
             {
               error: "mcp_unavailable",
               message:
-                "The MCP connection is offline. Start your MCP server and check MCP_URL in .env; see /mcp-debug.",
+                "The MCP connection is offline. Start your MCP server and check MCP_SERVER_URL in .env.",
             },
             503,
           ),
@@ -147,12 +192,31 @@ export function createPolicy({ issuer, mcpInternalUrl, validationUrl, gatewaySec
         expressions: ["req.url.path == '/mcp'"],
         actions: [json({ error: "invalid_token" }, 401, { "www-authenticate": challenge })],
       },
+      ...(appInternalUrl && mcpUpstreamPath && mcpUpstreamPath !== "/"
+        ? [
+            {
+              expressions: [
+                `!req.url.raw_path.unescapeUrl().lower().matches(${JSON.stringify(appPathBlocklist)})`,
+              ],
+              actions: [
+                { type: "forward-internal", config: { url: appInternalUrl, on_error: "continue" } },
+                json(
+                  {
+                    error: "app_unavailable",
+                    message: "Start the website configured in APP_URL and retry.",
+                  },
+                  503,
+                ),
+              ],
+            },
+          ]
+        : []),
     ],
   };
 }
 
 // The outer policy converts ngrok's JWT failures into MCP's 401 challenge.
-export function createValidationPolicy({ issuer, jwksUrl }) {
+export function createValidationPolicy({ issuer, jwksUrl }: { issuer: string; jwksUrl: string }) {
   const challenge = `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp", scope="mcp:use"`;
   return {
     on_http_request: [

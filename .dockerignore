@@ -6,3 +6,6 @@
 !bin/**
 !lib/
 !lib/**
+!tsconfig.json
+!assets/
+!assets/**

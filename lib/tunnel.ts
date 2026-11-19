@@ -1,9 +1,15 @@
 import { randomBytes } from "node:crypto";
 import https from "node:https";
+import { normalize } from "node:path/posix";
 
-import { createPolicy, createValidationPolicy } from "./policy.mjs";
+import type ngrok from "@ngrok/ngrok";
+import type { Listener, Session } from "@ngrok/ngrok";
 
-function publicOrigin(value) {
+import type { AccessEntry } from "./config.js";
+
+import { createPolicy, createValidationPolicy } from "./policy.js";
+
+function publicOrigin(value: string) {
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -17,7 +23,7 @@ function publicOrigin(value) {
   return url.origin;
 }
 
-function localOrigin(value) {
+function localOrigin(value: string) {
   const url = new URL(value);
   if (
     url.protocol !== "http:" ||
@@ -32,15 +38,23 @@ function localOrigin(value) {
   return url.origin;
 }
 
-async function closeResources(session, listeners) {
+async function closeResources(session: Session, listeners: Listener[]) {
   await Promise.allSettled(listeners.map((listener) => listener.close()));
   await session.close().catch(() => {});
 }
 
-export async function reservePublicUrl({ authtoken, publicUrl, sdk }) {
+export async function reservePublicUrl({
+  authtoken,
+  publicUrl,
+  sdk,
+}: {
+  authtoken: string;
+  publicUrl?: string;
+  sdk?: Pick<typeof ngrok, "SessionBuilder">;
+}) {
   sdk ??= (await import("@ngrok/ngrok")).default;
   const session = await new sdk.SessionBuilder().authtoken(authtoken).connect();
-  let provisional;
+  let provisional: Listener | undefined;
   try {
     let issuer;
     if (publicUrl) issuer = publicOrigin(publicUrl);
@@ -67,7 +81,9 @@ export async function reservePublicUrl({ authtoken, publicUrl, sdk }) {
           }),
         )
         .listen();
-      issuer = publicOrigin(provisional.url());
+      const reservedUrl = provisional.url();
+      if (!reservedUrl) throw new Error("ngrok did not allocate a public URL.");
+      issuer = publicOrigin(reservedUrl);
       await provisional.close();
       provisional = undefined;
     }
@@ -82,7 +98,7 @@ export async function reservePublicUrl({ authtoken, publicUrl, sdk }) {
   }
 }
 
-async function waitForJwks(url) {
+async function waitForJwks(url: string) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const ready = await new Promise((resolve) => {
@@ -109,11 +125,23 @@ export async function startTunnels({
   issuer,
   helperUrl,
   mcpUrl,
+  appUrl,
+  mcpUpstreamUrl,
   gatewaySecret,
-  ownerEmail,
+  users,
   jwksUrl,
+}: {
+  session: Session;
+  issuer: string;
+  helperUrl: string;
+  mcpUrl: string;
+  appUrl?: string;
+  mcpUpstreamUrl: string;
+  gatewaySecret: string;
+  users: AccessEntry[];
+  jwksUrl?: string;
 }) {
-  const listeners = [];
+  const listeners: Listener[] = [];
   try {
     issuer = publicOrigin(issuer);
     helperUrl = localOrigin(helperUrl);
@@ -121,6 +149,13 @@ export async function startTunnels({
     const suffix = randomBytes(8).toString("hex");
     const mcpInternalUrl = `https://mcp-oauth-provider-backend-${suffix}.internal`;
     const validationUrl = `https://mcp-oauth-provider-validator-${suffix}.internal`;
+    const mcpUpstreamPath = appUrl
+      ? normalize(decodeURIComponent(new URL(mcpUpstreamUrl).pathname).replaceAll("\\", "/"))
+          .replace(/\/+$/, "")
+          .toLowerCase() || "/"
+      : undefined;
+    const app = appUrl && mcpUpstreamPath !== "/" ? new URL(appUrl) : undefined;
+    const appInternalUrl = app && `https://mcp-oauth-provider-app-${suffix}.internal`;
     jwksUrl ??= `${issuer}/jwks?v=${suffix}`;
     const keyUrl = new URL(jwksUrl);
     if (keyUrl.origin !== issuer || keyUrl.pathname !== "/jwks")
@@ -130,7 +165,9 @@ export async function startTunnels({
       mcpInternalUrl,
       validationUrl,
       gatewaySecret,
-      ownerEmail,
+      users,
+      appInternalUrl,
+      mcpUpstreamPath,
     });
     listeners.push(
       await session
@@ -139,6 +176,17 @@ export async function startTunnels({
         .binding("internal")
         .listenAndForward(mcpUrl),
     );
+    if (app && appInternalUrl) {
+      listeners.push(
+        await session
+          .httpEndpoint()
+          .domain(new URL(appInternalUrl).hostname)
+          .binding("internal")
+          .requestHeader("host", app.host)
+          .verifyUpstreamTls(true)
+          .listenAndForward(app.href),
+      );
+    }
     listeners.push(
       await session
         .httpEndpoint()
@@ -157,7 +205,12 @@ export async function startTunnels({
         .trafficPolicy(JSON.stringify(createValidationPolicy({ issuer, jwksUrl })))
         .listen(),
     );
-    return { issuer, listeners, close: () => closeResources(session, listeners) };
+    return {
+      issuer,
+      listeners,
+      appUrl: app?.href,
+      close: () => closeResources(session, listeners),
+    };
   } catch (error) {
     await closeResources(session, listeners);
     throw error;

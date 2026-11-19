@@ -1,24 +1,45 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
-import Provider, { errors } from "oidc-provider";
+import { jsx } from "hono/jsx";
+import Provider, { errors, type AdapterFactory, type Configuration } from "oidc-provider";
 
-const equal = (a, b) => {
+import { ConsentPage } from "./consent-page.js";
+import { oauthClockTolerance } from "./state.js";
+
+const claudeClientId = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+const claudeCallback = "https://claude.ai/api/mcp/auth_callback";
+const codexClientId = "https://chatgpt.com/oauth/codex/client.json";
+const codexCallbacks = ["http://127.0.0.1/callback", "http://localhost/callback"];
+
+const equal = (a: string, b: string) => {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
 };
-const escape = (value) =>
-  String(value).replace(
-    /[&<>"']/g,
-    (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char],
-  );
+export interface IssuerOptions {
+  issuer: string;
+  gatewaySecret: string;
+  jwks: NonNullable<Configuration["jwks"]>;
+  adapter?: AdapterFactory;
+  cookieKey?: string;
+  claudeCimd?: boolean;
+  mcpServerName?: string;
+  mcpServerIcon?: URL;
+  resource?: string;
+}
 
 export function createIssuer({
   issuer,
   gatewaySecret,
   jwks,
+  adapter,
+  cookieKey = randomBytes(32).toString("base64url"),
+  claudeCimd = false,
+  mcpServerName,
+  mcpServerIcon,
   resource = `${new URL(issuer).origin}/mcp`,
-}) {
+}: IssuerOptions) {
   const base = new URL(issuer);
   if (
     base.href !== `${base.origin}/` ||
@@ -42,16 +63,17 @@ export function createIssuer({
     throw new Error("Resource must be an HTTPS URL (HTTP loopback is allowed for tests).");
   }
   resource = target.href;
-  const cookieKey = randomBytes(32).toString("base64url");
-  // shortcut: default in-memory adapter and per-run cookies invalidate sessions on restart; persist before sharing beyond a demo.
   const provider = new Provider(base.origin, {
     jwks,
+    adapter,
+    clockTolerance: oauthClockTolerance,
     cookies: {
       keys: [cookieKey],
       short: { secure: base.protocol === "https:", sameSite: "lax" },
       long: { secure: base.protocol === "https:", sameSite: "lax" },
     },
     clients: [],
+    clientAuthMethods: ["none"],
     clientDefaults: {
       application_type: "native",
       grant_types: ["authorization_code", "refresh_token"],
@@ -60,14 +82,23 @@ export function createIssuer({
     },
     extraClientMetadata: {
       properties: ["client_name"],
-      validator(_ctx, _key, _value, metadata) {
-        // Some CLI clients label loopback callbacks as web; the explicit redirect check below is the boundary.
+      validator(ctx, _key, _value, metadata) {
+        const publishedClaude =
+          claudeCimd && ctx === undefined && metadata.client_id === claudeClientId;
+        const publishedCodex =
+          claudeCimd && ctx === undefined && metadata.client_id === codexClientId;
+        // Public clients use loopback callbacks or documented hosted HTTPS callbacks.
         if (
-          !["native", "web"].includes(metadata.application_type) ||
+          (metadata.application_type !== "native" && metadata.application_type !== "web") ||
           metadata.token_endpoint_auth_method !== "none" ||
+          !Array.isArray(metadata.grant_types) ||
+          // The library filters the extra grant in Claude's document after this validator runs.
           metadata.grant_types.some(
-            (type) => !["authorization_code", "refresh_token"].includes(type),
+            (type) =>
+              !["authorization_code", "refresh_token"].includes(type) &&
+              !(publishedClaude && type === "urn:ietf:params:oauth:grant-type:jwt-bearer"),
           ) ||
+          !Array.isArray(metadata.response_types) ||
           metadata.response_types.some((type) => type !== "code")
         ) {
           throw new errors.InvalidClientMetadata(
@@ -76,11 +107,27 @@ export function createIssuer({
         }
         if (
           Buffer.byteLength(JSON.stringify(metadata)) > 16384 ||
+          !Array.isArray(metadata.redirect_uris) ||
+          (publishedClaude &&
+            (metadata.redirect_uris.length !== 1 ||
+              metadata.redirect_uris[0] !== claudeCallback)) ||
+          (publishedCodex &&
+            (metadata.application_type !== "native" ||
+              metadata.redirect_uris.some((uri) => !codexCallbacks.includes(uri)))) ||
           metadata.redirect_uris.some((value) => {
             const url = new URL(value);
+            const loopback =
+              url.protocol === "http:" &&
+              ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+            const hosted =
+              ((url.origin === "https://chatgpt.com" &&
+                (url.pathname === "/connector_platform_oauth_redirect" ||
+                  /^\/connector\/oauth\/[A-Za-z0-9_-]+$/.test(url.pathname))) ||
+                (url.origin === "https://www.cursor.com" &&
+                  url.pathname === "/agents/mcp/oauth/callback")) &&
+              value === `${url.origin}${url.pathname}`;
             return (
-              url.protocol !== "http:" ||
-              !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) ||
+              !(loopback || hosted || value === claudeCallback) ||
               url.username ||
               url.password ||
               url.hash
@@ -88,7 +135,7 @@ export function createIssuer({
           })
         )
           throw new errors.InvalidClientMetadata(
-            "Use HTTP loopback redirects and metadata smaller than 16 KiB.",
+            "Use HTTP loopback or documented ChatGPT, Cursor, or Claude OAuth callbacks and metadata smaller than 16 KiB.",
           );
       },
     },
@@ -98,6 +145,11 @@ export function createIssuer({
     features: {
       devInteractions: { enabled: false },
       registration: { enabled: true, issueRegistrationAccessToken: false },
+      clientIdMetadataDocument: {
+        enabled: claudeCimd,
+        ack: "draft-03",
+        allowFetch: (_ctx, clientId) => clientId === claudeClientId || clientId === codexClientId,
+      },
       userinfo: { enabled: false },
       resourceIndicators: {
         enabled: true,
@@ -121,12 +173,12 @@ export function createIssuer({
     // Access and refresh expire with the original grant, even after rotation or browser-session expiry.
     expiresWithSession: () => false,
     ttl: {
-      AccessToken: (ctx) => ctx.oidc.entities.Grant.remainingTTL,
+      AccessToken: (ctx) => ctx.oidc.entities.Grant!.remainingTTL,
       AuthorizationCode: 15 * 60,
       Interaction: 24 * 60 * 60,
       Session: 24 * 60 * 60,
       Grant: 90 * 24 * 60 * 60,
-      RefreshToken: (ctx) => ctx.oidc.entities.Grant.remainingTTL,
+      RefreshToken: (ctx) => ctx.oidc.entities.Grant!.remainingTTL,
     },
   });
   provider.proxy = true;
@@ -139,19 +191,27 @@ export function createIssuer({
     await next();
   });
   const callback = provider.callback();
-  const csrf = (uid) => createHmac("sha256", cookieKey).update(uid).digest("base64url");
-  function reply(res, status, message, type = "text/plain", callbackOrigin = "") {
+  const csrf = (uid: string) => createHmac("sha256", cookieKey).update(uid).digest("base64url");
+  const iconSource = mcpServerIcon?.protocol === "https:" ? mcpServerIcon.origin : "data:";
+  function reply(
+    res: ServerResponse,
+    status: number,
+    message: string,
+    type = "text/plain",
+    callbackOrigin = "",
+  ) {
+    const iconPolicy = callbackOrigin ? ` img-src ${iconSource};` : "";
     res.writeHead(status, {
       "Content-Type": `${type}; charset=utf-8`,
       "Cache-Control": "no-store",
       "Referrer-Policy": "same-origin",
       "X-Frame-Options": "DENY",
       // Browser form redirects must reach this already-validated client callback.
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${callbackOrigin}; frame-ancestors 'none'`,
+      "Content-Security-Policy": `default-src 'none'; style-src 'self';${iconPolicy} form-action 'self' ${callbackOrigin}; frame-ancestors 'none'`,
     });
     res.end(message);
   }
-  async function handle(req, res) {
+  async function handle(req: IncomingMessage, res: ServerResponse) {
     try {
       const path = new URL(req.url ?? "/", base).pathname;
       if (!path.startsWith("/interaction/")) {
@@ -163,14 +223,14 @@ export function createIssuer({
       const secret = req.headers["x-mcp-oauth-provider-secret"];
       if (typeof secret !== "string" || !equal(secret, gatewaySecret))
         return reply(res, 403, "Open this authorization page through the ngrok sign-in gateway.");
-      if (!["GET", "POST"].includes(req.method)) {
+      if (req.method !== "GET" && req.method !== "POST") {
         res.setHeader("Allow", "GET, POST");
         return reply(res, 405, "Use GET or POST.");
       }
       const interaction = await provider.interactionDetails(req, res);
       if (path !== `/interaction/${interaction.uid}`)
         return reply(res, 400, "Restart authorization.");
-      // The gateway already authenticated the owner; only consent needs a browser form.
+      // The gateway already authenticated the user; only consent needs a browser form.
       if (req.method === "GET" && interaction.prompt.name === "login")
         return provider.interactionFinished(
           req,
@@ -183,15 +243,25 @@ export function createIssuer({
       if (req.method === "GET") {
         const client = await provider.Client.find(String(interaction.params.client_id));
         const name = client?.metadata().client_name;
+        const { client_id: clientId, redirect_uri: redirectUri } = interaction.params;
+        if (typeof clientId !== "string" || typeof redirectUri !== "string")
+          return reply(res, 400, "Restart authorization.");
         const clientName = typeof name === "string" && name.trim() ? name : "MCP client";
         return reply(
           res,
           200,
-          `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP OAuth Provider</title><style>
-:root{color-scheme:light dark;--base:#fafafa;--surface:#fff;--ink:#171717;--muted:#666;--line:#e5e5e5;--focus:#006b9c;--inverse:#fff}*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.provider{text-align:center;font-size:15px;font-weight:600;padding:32px 24px}main{max-width:880px;margin:52px auto 64px;padding:0 32px}.intro{text-align:center;margin-bottom:56px}h1{font-size:38px;line-height:1.2;letter-spacing:-1px;font-weight:500;margin:0 0 20px;overflow-wrap:anywhere}.intro p{margin:0 auto;max-width:56ch;color:var(--muted)}.server{display:block;color:var(--ink);margin-top:14px;overflow-wrap:anywhere}.permission{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:28px 32px}h2{font-size:20px;line-height:1.4;font-weight:600;margin:0 0 10px}p{margin:0}.permission p+p{margin-top:14px}.muted{color:var(--muted);font-size:14px}details{margin-top:24px;font-size:14px;color:var(--muted)}summary{cursor:pointer;width:fit-content}dl{display:grid;grid-template-columns:140px minmax(0,1fr);gap:10px 20px;margin:20px 0}dt{font-weight:500}dd{margin:0;overflow-wrap:anywhere;color:var(--ink)}code{font:13px/1.6 ui-monospace,SFMono-Regular,monospace}form{margin-top:40px;border-top:1px solid var(--line);padding-top:24px;display:flex;align-items:center;justify-content:space-between;gap:24px}.expiry{font-size:14px;color:var(--muted)}.actions{display:flex;gap:10px;flex-shrink:0}button{height:36px;display:inline-flex;align-items:center;justify-content:center;padding:7px 16px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:500 14px/20px ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;cursor:pointer}.primary{background:var(--ink);color:var(--inverse);border-color:var(--ink)}button:hover{filter:brightness(.94)}button:focus-visible,summary:focus-visible{outline:3px solid var(--focus);outline-offset:4px}@media(prefers-color-scheme:dark){:root{--base:#121212;--surface:#171717;--ink:#fafafa;--muted:#a3a3a3;--line:#333;--focus:#61ccff;--inverse:#171717}}@media(max-width:820px){main{margin:36px auto 48px;padding:0 28px}.intro{margin-bottom:36px}h1{font-size:32px}.permission{padding:24px}}@media(max-width:560px){main{padding:0 20px}h1{font-size:28px}form{align-items:flex-start;flex-direction:column;gap:18px}.actions{align-self:flex-end}dl{grid-template-columns:1fr;gap:4px}dd{margin-bottom:10px}}
-</style></head><body><header class="provider">MCP OAuth Provider</header><main><section class="intro"><h1>${escape(clientName)} wants to connect to your MCP server</h1><p>You are authorizing access to your development server.<span class="server">${escape(new URL(resource).host)}</span></p></section><section class="permission" aria-labelledby="permission-title"><h2 id="permission-title">Use your MCP server</h2><p>Allow this client to discover and call the tools your server exposes.</p><p class="muted">This connection does not separate read-only and write access. Only authorize a client you trust with your development server.</p></section><details><summary>Connection details</summary><dl><dt>Client name</dt><dd>${escape(clientName)} <span class="muted">(provided by the client)</span></dd><dt>Client ID</dt><dd><code>${escape(interaction.params.client_id)}</code></dd><dt>MCP endpoint</dt><dd><code>${escape(resource)}</code></dd><dt>Return address</dt><dd><code>${escape(interaction.params.redirect_uri)}</code></dd></dl></details><form method="post" action="/interaction/${escape(interaction.uid)}"><input type="hidden" name="csrf" value="${csrf(interaction.uid)}"><p class="expiry">Access lasts up to 90 days.</p><div class="actions"><button type="submit" name="decision" value="deny">Cancel</button><button type="submit" class="primary" name="decision" value="allow">Authorize</button></div></form></main></body></html>`,
+          `<!doctype html>${jsx(ConsentPage, {
+            serverName: mcpServerName,
+            icon: mcpServerIcon,
+            clientName,
+            clientId,
+            resource,
+            redirectUri,
+            uid: interaction.uid,
+            csrf: csrf(interaction.uid),
+          })}`,
           "text/html",
-          new URL(interaction.params.redirect_uri).origin,
+          new URL(redirectUri).origin,
         );
       }
       if (
@@ -209,13 +279,16 @@ export function createIssuer({
       const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
       if (form.getAll("csrf").length !== 1 || !equal(form.get("csrf") ?? "", csrf(interaction.uid)))
         return reply(res, 403, "Authorization form expired. Restart authorization.");
-      if (form.getAll("decision").length !== 1 || !["allow", "deny"].includes(form.get("decision")))
+      if (
+        form.getAll("decision").length !== 1 ||
+        !["allow", "deny"].includes(form.get("decision") ?? "")
+      )
         return reply(res, 400, "Choose Authorize or Cancel.");
       if (form.get("decision") === "deny")
         return provider.interactionFinished(
           req,
           res,
-          { error: "access_denied", error_description: "The owner denied access." },
+          { error: "access_denied", error_description: "The user denied access." },
           { mergeWithLastSubmission: false },
         );
       const grant = interaction.grantId
@@ -225,10 +298,9 @@ export function createIssuer({
             clientId: String(interaction.params.client_id),
           });
       if (!grant) return reply(res, 400, "Authorization expired. Restart authorization.");
-      if (interaction.prompt.details.missingOIDCScope)
-        grant.addOIDCScope(interaction.prompt.details.missingOIDCScope);
-      if (interaction.prompt.details.missingOIDCClaims)
-        grant.addOIDCClaims(interaction.prompt.details.missingOIDCClaims);
+      const { missingOIDCScope, missingOIDCClaims } = interaction.prompt.details;
+      if (Array.isArray(missingOIDCScope)) grant.addOIDCScope(missingOIDCScope);
+      if (Array.isArray(missingOIDCClaims)) grant.addOIDCClaims(missingOIDCClaims);
       grant.addResourceScope(resource, "mcp:use");
       return provider.interactionFinished(
         req,
@@ -237,10 +309,11 @@ export function createIssuer({
         { mergeWithLastSubmission: true },
       );
     } catch (error) {
+      const status = error instanceof Error && "statusCode" in error ? error.statusCode : undefined;
       if (!res.headersSent)
         reply(
           res,
-          error.statusCode && error.statusCode < 500 ? error.statusCode : 400,
+          typeof status === "number" && status < 500 ? status : 400,
           "Authorization request failed. Restart authorization.",
         );
       else if (!res.writableEnded) res.end();

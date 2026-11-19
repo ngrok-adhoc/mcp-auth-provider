@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-const script = new URL("../scripts/tag-release.mjs", import.meta.url);
+const script = new URL("../scripts/tag-release.js", import.meta.url);
 
 test("release tags require an explicit version and clean synchronized main, and cannot overwrite", (t) => {
   const directory = mkdtempSync(join(tmpdir(), "mcp-release-"));
@@ -22,14 +22,14 @@ test("release tags require an explicit version and clean synchronized main, and 
   git("config", "commit.gpgsign", "false");
   git("config", "tag.gpgsign", "false");
   mkdirSync(join(checkout, "scripts"));
-  copyFileSync(script, join(checkout, "scripts/tag-release.mjs"));
+  copyFileSync(script, join(checkout, "scripts/tag-release.js"));
   writeFileSync(join(checkout, "package.json"), '{"version":"0.1.0"}\n');
   git("add", ".");
   git("commit", "-m", "Fixture");
   git("remote", "add", "origin", remote);
   git("push", "-u", "origin", "main");
   const release = (...args) =>
-    spawnSync(process.execPath, [join(checkout, "scripts/tag-release.mjs"), ...args], {
+    spawnSync(process.execPath, [join(checkout, "scripts/tag-release.js"), ...args], {
       cwd: directory,
       encoding: "utf8",
     });

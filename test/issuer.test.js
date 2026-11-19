@@ -1,12 +1,33 @@
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, randomBytes, verify } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { createIssuer } from "../lib/issuer.mjs";
+import { createIssuer } from "../dist/lib/issuer.js";
+import { openOAuthState } from "../dist/lib/state.js";
 
-test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and one-time codes", async (t) => {
+const claudeClientId = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+const claudeCallback = "https://claude.ai/api/mcp/auth_callback";
+const codexClientId = "https://chatgpt.com/oauth/codex/client.json";
+const codexPublishedRedirects = ["http://127.0.0.1/callback", "http://localhost/callback"];
+const jwtBearerGrant = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+async function checkOAuth(
+  t,
+  {
+    redirectUri,
+    redirectUris = [redirectUri],
+    applicationType = "web",
+    publishedClientId,
+    persistent = false,
+  },
+) {
+  const claudeCimd = Boolean(publishedClientId);
+  const publishedClaude = publishedClientId === claudeClientId;
   let now = Date.now();
   t.mock.method(Date, "now", () => now);
   let handle;
@@ -24,7 +45,40 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     alg: "RS256",
   };
   const resource = "https://mcp-oauth-provider.example/mcp";
-  ({ handle } = createIssuer({ issuer, gatewaySecret, jwks: { keys: [key] }, resource }));
+  const mcpServerName = claudeCimd ? "Bowie & <Tools>" : undefined;
+  const mcpServerIcon = publishedClaude
+    ? new URL("https://images.example.com/bowie.png?size=40&v=1")
+    : claudeCimd
+      ? new URL("data:image/svg+xml;base64,PHN2Zy8+")
+      : undefined;
+  const users = ["owner@example.com", "guest@example.com"];
+  const project = persistent ? await mkdtemp(join(tmpdir(), "mcp-oauth-restart-")) : undefined;
+  let state;
+  if (project)
+    t.after(async () => {
+      await state?.close();
+      await rm(project, { recursive: true, force: true });
+    });
+  async function start(allowlist = users) {
+    await state?.close();
+    state = undefined;
+    if (project) state = await openOAuthState(issuer, allowlist, project);
+    ({ handle } = createIssuer({
+      issuer,
+      gatewaySecret,
+      jwks: state?.jwks ?? { keys: [key] },
+      adapter: state?.adapter,
+      cookieKey: state?.cookieKey,
+      resource,
+      claudeCimd,
+      mcpServerName,
+      mcpServerIcon,
+    }));
+  }
+  await start();
+  const signingKey = state
+    ? createPublicKey({ key: state.jwks.keys[0], format: "jwk" })
+    : publicKey;
   const cookies = new Map();
   async function request(path, options = {}) {
     const response = await fetch(new URL(path, issuer), {
@@ -43,13 +97,36 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     return response;
   }
   const registration = {
-    application_type: "native",
+    application_type: applicationType,
     client_name: '<img src=x onerror="alert(1)">',
-    redirect_uris: ["http://127.0.0.1:9988/callback"],
+    redirect_uris: redirectUris,
     grant_types: ["authorization_code"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
   };
+  const metadataFetches = [];
+  const expectedPublishedRedirects = publishedClaude ? [redirectUri] : codexPublishedRedirects;
+  let publishedRedirects = expectedPublishedRedirects;
+  if (claudeCimd) {
+    const fetchLocal = globalThis.fetch;
+    t.mock.method(globalThis, "fetch", (url, options) => {
+      if (new URL(url).origin === issuer) return fetchLocal(url, options);
+      metadataFetches.push(String(url));
+      assert.equal(String(url), publishedClientId);
+      assert.equal(options.redirect, "manual");
+      return Response.json({
+        ...registration,
+        client_id: publishedClientId,
+        redirect_uris: publishedRedirects,
+        grant_types: [
+          "authorization_code",
+          "refresh_token",
+          ...(publishedClaude ? [jwtBearerGrant] : []),
+        ],
+        ...(!publishedClaude && { token_endpoint_auth_methods_supported: ["none"] }),
+      });
+    });
+  }
   const register = (body) =>
     request("/reg", {
       method: "POST",
@@ -74,25 +151,71 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     (await register({ ...registration, grant_types: ["client_credentials"] })).status,
     400,
   );
+  for (const redirect of [
+    "https://chatgpt.com.evil.com/connector_platform_oauth_redirect",
+    "https://evil.com/connector/oauth/test",
+    "http://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chatgpt.com:444/connector_platform_oauth_redirect",
+    "https://chatgpt.com/connector_platform_oauth_redirect?next=https://evil.com",
+    "https://chatgpt.com/connector_platform_oauth_redirect#fragment",
+    "https://user:password@chatgpt.com/connector_platform_oauth_redirect",
+    "https://chatgpt.com/connector/oauth/",
+    "https://chatgpt.com/connector/oauth/test/extra",
+    "https://chatgpt.com/connector/oauth/%2Ftest",
+    "https://chatgpt.com/other",
+    "https://www.cursor.com.evil.com/agents/mcp/oauth/callback",
+    "https://cursor.com/agents/mcp/oauth/callback",
+    "http://www.cursor.com/agents/mcp/oauth/callback",
+    "https://www.cursor.com:444/agents/mcp/oauth/callback",
+    "https://www.cursor.com/agents/mcp/oauth/callback/extra",
+    "https://www.cursor.com/agents/mcp/oauth/callback?next=https://evil.com",
+    "https://www.cursor.com/agents/mcp/oauth/callback#fragment",
+    "https://user:password@www.cursor.com/agents/mcp/oauth/callback",
+    "cursor://anysphere.cursor-mcp/oauth/callback",
+    "https://claude.ai.evil.com/api/mcp/auth_callback",
+    "http://claude.ai/api/mcp/auth_callback",
+    "https://claude.ai:443/api/mcp/auth_callback",
+    "https://claude.ai:444/api/mcp/auth_callback",
+    "https://claude.ai/api/mcp/auth_callback/extra",
+    "https://claude.ai/api/mcp/other/../auth_callback",
+    "https://claude.ai/api/mcp/auth_callback?next=https://evil.com",
+    "https://claude.ai/api/mcp/auth_callback#fragment",
+    "https://user:password@claude.ai/api/mcp/auth_callback",
+  ])
+    assert.equal(
+      (await register({ ...registration, application_type: "web", redirect_uris: [redirect] }))
+        .status,
+      400,
+      redirect,
+    );
+  assert.equal(
+    (await register({ ...registration, token_endpoint_auth_method: "client_secret_post" })).status,
+    400,
+  );
   const codeOnly = await (await register(registration)).json();
   const { grant_types: _grantTypes, ...defaultRegistration } = registration;
   const defaultClient = await (await register(defaultRegistration)).json();
   assert.deepEqual(defaultClient.grant_types, ["authorization_code", "refresh_token"]);
   const registered = await register({
     ...registration,
-    application_type: "web",
     grant_types: ["authorization_code", "refresh_token"],
   });
   assert.equal(registered.status, 201, await registered.clone().text());
   const client = await registered.json();
+  assert.deepEqual(client.redirect_uris, redirectUris);
   const metadata = await (await request("/.well-known/oauth-authorization-server")).json();
+  assert.equal(metadata.client_id_metadata_document_supported, claudeCimd || undefined);
+  assert.equal(metadata.registration_endpoint, `${issuer}/reg`);
+  assert.equal(metadata.authorization_response_iss_parameter_supported, true);
+  assert.deepEqual(metadata.token_endpoint_auth_methods_supported, ["none"]);
   assert.deepEqual(metadata.code_challenge_methods_supported, ["S256"]);
   assert.ok(metadata.grant_types_supported.includes("authorization_code"));
   assert.ok(metadata.grant_types_supported.includes("refresh_token"));
+  assert.ok(!metadata.grant_types_supported.includes(jwtBearerGrant));
   const verifier = randomBytes(32).toString("base64url");
   const params = {
-    client_id: client.client_id,
-    redirect_uri: registration.redirect_uris[0],
+    client_id: publishedClientId ?? client.client_id,
+    redirect_uri: redirectUri,
     response_type: "code",
     scope: "mcp:use",
     resource,
@@ -102,6 +225,24 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   };
   const authorize = (extra = {}) =>
     request(`/auth?${new URLSearchParams({ ...params, ...extra })}`);
+  if (claudeCimd) {
+    assert.equal((await authorize({ client_id: `${publishedClientId}/other` })).status, 400);
+    assert.deepEqual(metadataFetches, []);
+    assert.equal(
+      (
+        await register({
+          ...registration,
+          client_id: publishedClientId,
+          grant_types: ["authorization_code", jwtBearerGrant],
+        })
+      ).status,
+      400,
+    );
+    publishedRedirects = ["https://chatgpt.com/connector_platform_oauth_redirect"];
+    assert.equal((await authorize()).status, 400);
+    publishedRedirects = expectedPublishedRedirects;
+  }
+  assert.equal((await authorize({ redirect_uri: "https://chatgpt.com/other" })).status, 400);
   let response = await authorize({ code_challenge: "", code_challenge_method: "" });
   assert.match(response.headers.get("location") ?? (await response.text()), /invalid_request/);
   response = await authorize({ code_challenge_method: "plain" });
@@ -113,9 +254,10 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     for (let step = 0; step < 10; step++) {
       const location = result.headers.get("location");
       assert.ok(location, `Expected OAuth redirect, got ${result.status}: ${await result.text()}`);
-      if (location.startsWith(registration.redirect_uris[0])) {
+      if (location.startsWith(redirectUri)) {
         const url = new URL(location);
         assert.equal(url.searchParams.get("state"), "test-state");
+        assert.equal(url.searchParams.get("iss"), issuer);
         assert.ok(consentForms <= 1, "One approval form is sufficient");
         if (authorizationCount++ === 0) assert.equal(consentForms, 1);
         if (decision === "deny") {
@@ -150,20 +292,46 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
         }
         assert.equal(page.status, 200, await page.clone().text());
         consentForms++;
-        assert.ok(page.headers.get("content-security-policy").includes("http://127.0.0.1:9988"));
+        assert.ok(
+          page.headers.get("content-security-policy").includes(new URL(redirectUri).origin),
+        );
         const html = await page.text();
-        assert.match(html, /<title>MCP OAuth Provider<\/title>/);
-        assert.match(html, /wants to connect to your MCP server/);
-        assert.match(html, /Access lasts up to 90 days/);
+        if (claudeCimd) {
+          assert.match(html, /<title>Bowie &amp; &lt;Tools&gt;<\/title>/);
+          assert.match(html, /wants to connect to Bowie &amp; &lt;Tools&gt;/);
+          if (publishedClaude) {
+            assert.match(html, /src="https:\/\/images\.example\.com\/bowie\.png\?size=40&amp;v=1"/);
+            assert.match(
+              page.headers.get("content-security-policy"),
+              /img-src https:\/\/images\.example\.com;/,
+            );
+          } else {
+            assert.match(html, /src="data:image\/svg\+xml;base64,PHN2Zy8\+"/);
+            assert.match(page.headers.get("content-security-policy"), /img-src data:;/);
+          }
+        } else {
+          assert.match(html, /<title>MCP OAuth Provider<\/title>/);
+          assert.match(html, /wants to connect to your MCP server/);
+          assert.match(html, /class="logo default-logo" src="data:image\/svg\+xml;base64,/);
+          assert.match(page.headers.get("content-security-policy"), /img-src data:;/);
+        }
+        assert.match(html, /width="100" height="100" alt="" referrerpolicy="no-referrer"/);
+        assert.match(html, /including access to all read and write tools/);
         assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
-        assert.doesNotMatch(html, /<img|<script|ngrok/);
+        assert.doesNotMatch(html, /<img src=x|<script|<style/);
+        assert.match(
+          html,
+          /This developer tool uses ngrok to add OAuth to your existing HTTP MCP server and forward authorized requests to it\./,
+        );
+        assert.match(html, /rel="stylesheet" href="\/interaction\/consent\.css"/);
         assert.equal((html.match(/<form\b/g) ?? []).length, 1);
-        assert.match(html, /<details><summary>Connection details<\/summary>/);
+        assert.match(html, /<details>\s*<summary>Connection details<\/summary>/);
+        assert.equal((html.match(/<div><dt>/g) ?? []).length, 4);
         assert.match(html, />Cancel<\/button>/);
         assert.match(html, />Authorize<\/button>/);
         assert.match(
           page.headers.get("content-security-policy"),
-          /default-src 'none'; style-src 'unsafe-inline'/,
+          /default-src 'none'; style-src 'self'/,
         );
         assert.doesNotMatch(page.headers.get("content-security-policy"), /script-src/);
         const csrf = /name="csrf" value="([^"]+)"/.exec(html)[1];
@@ -184,14 +352,19 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     }
     assert.fail("OAuth interaction did not finish");
   }
-  const exchange = (authorizationCode, codeVerifier, clientId = client.client_id) =>
+  const exchange = (
+    authorizationCode,
+    codeVerifier,
+    clientId = params.client_id,
+    redirect = redirectUri,
+  ) =>
     request("/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         client_id: clientId,
-        redirect_uri: registration.redirect_uris[0],
+        redirect_uri: redirect,
         resource,
         code: authorizationCode,
         code_verifier: codeVerifier,
@@ -201,7 +374,20 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   const invalid = await exchange(await code(), randomBytes(32).toString("base64url"));
   assert.equal(invalid.status, 400);
   assert.equal((await invalid.json()).error, "invalid_grant");
+  const wrongRedirect = await exchange(
+    await code(),
+    verifier,
+    params.client_id,
+    "https://chatgpt.com/other",
+  );
+  assert.equal(wrongRedirect.status, 400);
+  assert.equal((await wrongRedirect.json()).error, "invalid_grant");
   const authorizationCode = await code();
+  if (persistent) {
+    const originalKeys = await (await request("/jwks")).json();
+    await start([...users].reverse());
+    assert.deepEqual(await (await request("/jwks")).json(), originalKeys);
+  }
   const exchanged = await exchange(authorizationCode, verifier);
   assert.equal(exchanged.status, 200, await exchanged.clone().text());
   const token = await exchanged.json();
@@ -213,7 +399,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     verify(
       "RSA-SHA256",
       Buffer.from(`${header}.${payload}`),
-      publicKey,
+      signingKey,
       Buffer.from(signature, "base64url"),
     ),
   );
@@ -228,7 +414,7 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "refresh_token",
-        client_id: client.client_id,
+        client_id: params.client_id,
         refresh_token: value,
         resource,
         ...extra,
@@ -238,6 +424,14 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
     assert.equal(response.status, 400, await response.clone().text());
     assert.equal((await response.json()).error, error);
   };
+  if (claudeCimd) {
+    await rejected(
+      await refresh("unused", { grant_type: jwtBearerGrant }),
+      "unsupported_grant_type",
+    );
+    assert.ok(metadataFetches.length >= 2);
+    assert.ok(metadataFetches.every((url) => url === publishedClientId));
+  }
   await rejected(await refresh("not-issued"), "invalid_grant");
   const otherClient = await (
     await register({
@@ -251,6 +445,11 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   );
   await rejected(await refresh(token.refresh_token, { scope: "mcp:use admin" }), "invalid_scope");
 
+  if (persistent) {
+    await start();
+    const remembered = await authorize();
+    assert.ok(remembered.headers.get("location")?.startsWith(redirectUri));
+  }
   now += 301_000;
   assert.ok(claims.exp > Math.floor(now / 1000));
   const renewed = await refresh(token.refresh_token);
@@ -313,4 +512,81 @@ test("loopback OAuth: gateway, consent, PKCE, JWT audience, rotating refresh and
   now = issuedAt + (90 * 24 * 60 * 60 + 1) * 1000;
   assert.ok(lastClaims.exp < Math.floor(now / 1000));
   await rejected(await refresh(lastToken.refresh_token), "invalid_grant");
-});
+
+  if (persistent) {
+    const fresh = await exchange(await code(), verifier);
+    assert.equal(fresh.status, 200, await fresh.clone().text());
+    const prior = await fresh.json();
+    const previousKid = state.kid;
+    const previousCookieKey = state.cookieKey;
+    await start(["guest@example.com"]);
+    assert.notEqual(state.cookieKey, previousCookieKey);
+    const {
+      keys: [currentKey],
+    } = await (await request("/jwks")).json();
+    assert.notEqual(currentKey.kid, previousKid);
+    assert.equal(currentKey.d, undefined);
+    const [h, p, sig] = prior.access_token.split(".");
+    assert.equal(
+      verify(
+        "RSA-SHA256",
+        Buffer.from(`${h}.${p}`),
+        createPublicKey({ key: currentKey, format: "jwk" }),
+        Buffer.from(sig, "base64url"),
+      ),
+      false,
+    );
+    const revocation = await refresh(prior.refresh_token);
+    assert.ok([400, 401].includes(revocation.status));
+    assert.equal((await revocation.json()).error, "invalid_client");
+  }
+}
+
+for (const profile of [
+  {
+    name: "Codex loopback",
+    redirectUri: "http://127.0.0.1:9988/callback",
+    applicationType: "native",
+  },
+  {
+    name: "Claude Code loopback",
+    redirectUri: "http://localhost:9988/callback",
+    applicationType: "native",
+  },
+  { name: "IPv6 loopback", redirectUri: "http://[::1]:9988/callback", applicationType: "native" },
+  { name: "Claude hosted", redirectUri: claudeCallback },
+  {
+    name: "JSON persistence across restarts and allowlist changes",
+    redirectUri: claudeCallback,
+    persistent: true,
+  },
+  {
+    name: "Claude published identity",
+    redirectUri: claudeCallback,
+    publishedClientId: claudeClientId,
+  },
+  {
+    name: "Codex published identity",
+    redirectUri: "http://127.0.0.1:9988/callback",
+    applicationType: "native",
+    publishedClientId: codexClientId,
+  },
+  { name: "ChatGPT stable", redirectUri: "https://chatgpt.com/connector_platform_oauth_redirect" },
+  {
+    name: "ChatGPT callback ID",
+    redirectUri: "https://chatgpt.com/connector/oauth/test-callback_123",
+  },
+  ...["http://localhost:8787/callback", "https://www.cursor.com/agents/mcp/oauth/callback"].map(
+    (redirectUri) => ({
+      name: `Cursor dual registration using ${redirectUri}`,
+      redirectUri,
+      applicationType: "native",
+      redirectUris: [
+        "http://localhost:8787/callback",
+        "https://www.cursor.com/agents/mcp/oauth/callback",
+      ],
+    }),
+  ),
+])
+  test(`OAuth ${profile.name}: consent, PKCE, JWT, refresh and one-time codes`, (t) =>
+    checkOAuth(t, profile));

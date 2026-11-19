@@ -27,14 +27,14 @@ const app = createServer((req, res) =>
     .end(
       req.url === "/assets/app.css"
         ? "body{color:navy}"
-        : '<!doctype html><title>Existing app</title><h1>Your existing app</h1><p>The provider leaves this application untouched.</p><a href="/mcp-debug">MCP connection status</a>',
+        : "<!doctype html><title>Existing app</title><h1>Your existing app</h1><p>The provider leaves this application untouched.</p>",
     ),
 );
 const mcp = createServer((req, res) => {
   if (req.url !== "/original-mcp") return res.writeHead(404).end();
   void serve(req, res).catch(() => res.destroy());
 });
-// Raw upgrade echo verifies the tunnel/adapter byte stream, not WebSocket framing.
+// Raw upgrade echo verifies the tunnel byte stream, not WebSocket framing.
 app.on("upgrade", (req, socket, head) => {
   if (req.url !== "/ws") return socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
   const accept = createHash("sha1")

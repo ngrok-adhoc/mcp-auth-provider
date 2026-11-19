@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import https from "node:https";
 import { test } from "node:test";
 
-import { reservePublicUrl, startTunnels } from "../lib/tunnel.mjs";
+import { reservePublicUrl, startTunnels } from "../dist/lib/tunnel.js";
 
 function fakeSdk({ failAt = 0 } = {}) {
   const calls = [];
@@ -25,6 +25,14 @@ function fakeSdk({ failAt = 0 } = {}) {
         },
         trafficPolicy(value) {
           config.policy = JSON.parse(value);
+          return this;
+        },
+        requestHeader(name, value) {
+          config.requestHeader = [name, value];
+          return this;
+        },
+        verifyUpstreamTls(value) {
+          config.verifyUpstreamTls = value;
           return this;
         },
         async listenAndForward(value) {
@@ -65,7 +73,7 @@ const configuration = {
   helperUrl: "http://127.0.0.1:3100",
   mcpUrl: "http://127.0.0.1:3101",
   gatewaySecret: "g".repeat(40),
-  ownerEmail: "owner@example.com",
+  users: ["person@example.com"],
   jwksUrl: "https://assigned.ngrok-free.dev/jwks?v=fixture-key",
 };
 
@@ -113,12 +121,18 @@ test("opens one public and two internal listeners, after public signing keys are
     queueMicrotask(() => callback({ statusCode: 200, resume() {} }));
     return request;
   });
-  const tunnels = await startTunnels({ ...configuration, session: fake.session });
+  const tunnels = await startTunnels({
+    ...configuration,
+    users: ["guest@example.com", { regex: "\\A(?:[^@]+@ngrok\\.com)\\z" }],
+    session: fake.session,
+  });
   assert.equal(checkedKeys, true);
   assert.equal(fake.calls.length, 3);
   assert.equal(fake.calls[0].binding, "internal");
   assert.equal(fake.calls[0].upstream, configuration.mcpUrl);
   assert.equal(fake.calls[1].binding, "public");
+  assert.ok(JSON.stringify(fake.calls[1].policy).includes(".matches("));
+  assert.ok(JSON.stringify(fake.calls[1].policy).includes("guest@example.com"));
   assert.equal(fake.calls[1].upstream, configuration.helperUrl);
   assert.equal(fake.calls[2].binding, "internal");
   assert.equal(fake.calls[2].upstream, undefined);
@@ -150,4 +164,33 @@ test("rejects non-loopback upstreams and foreign signing-key URLs before exposin
     assert.equal(fake.calls.length, 0);
     assert.equal(fake.session.closed, true);
   }
+});
+
+test("an optional APP_URL becomes a direct SDK upstream for website traffic", async (t) => {
+  const fake = fakeSdk();
+  t.mock.method(https, "get", (_url, _options, callback) => {
+    assert.equal(fake.calls.length, 3);
+    const request = new EventEmitter();
+    request.setTimeout = () => {};
+    queueMicrotask(() => callback({ statusCode: 200, resume() {} }));
+    return request;
+  });
+  const tunnels = await startTunnels({
+    ...configuration,
+    appUrl: "https://mything.internal",
+    mcpUpstreamUrl: "http://127.0.0.1:3001/private/mcp",
+    session: fake.session,
+  });
+  t.after(() => tunnels.close());
+  const website = fake.calls[1];
+  const publicEndpoint = fake.calls[2];
+  assert.equal(website.binding, "internal");
+  assert.equal(website.upstream, "https://mything.internal/");
+  assert.deepEqual(website.requestHeader, ["host", "mything.internal"]);
+  assert.equal(website.verifyUpstreamTls, true);
+  assert.equal(publicEndpoint.upstream, configuration.helperUrl);
+  assert.equal(
+    publicEndpoint.policy.on_http_request.at(-1).actions[0].config.url,
+    `https://${website.domain}`,
+  );
 });

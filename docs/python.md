@@ -26,8 +26,8 @@ Create `.env` in that directory with your **agent authtoken** and allowed Google
 
 ```dotenv
 NGROK_AUTHTOKEN=your_ngrok_agent_authtoken
-OWNER_EMAIL=you@example.com
-# Optional: use an HTTPS domain available to your account.
+USERS='["you@example.com"]'
+# Set a fixed HTTPS origin to keep OAuth connections after a restart.
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
@@ -79,10 +79,15 @@ services:
         condition: service_healthy
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?Set NGROK_AUTHTOKEN in .env}
-      OWNER_EMAIL: ${OWNER_EMAIL:?Set OWNER_EMAIL in .env}
+      USERS: ${USERS:?Set USERS in .env}
       NGROK_URL: ${NGROK_URL:-}
-      APP_URL: http://mcp:8000
-      MCP_URL: http://mcp:8000/mcp
+      MCP_SERVER_URL: http://mcp:8000/mcp
+      STORAGE: local
+    volumes:
+      - oauth-state:/app/.mcp-oauth-provider
+
+volumes:
+  oauth-state:
 ```
 
 Start the stack. Docker pulls the images automatically; no repository checkout or local build is needed:
@@ -94,9 +99,11 @@ docker compose --env-file .env up -d
 docker compose --env-file .env logs -f provider
 ```
 
-Wait for the provider’s printed **MCP** and **Debug** URLs. Use the public HTTPS MCP URL ending in `/mcp`, not `localhost` or the private Docker service address. The TCP health check must pass before the provider starts. The first run downloads images and Python dependencies; no extra source files are needed.
+Wait for the provider’s printed **MCP** URL. Use the public HTTPS MCP URL ending in `/mcp`, not `localhost` or the private Docker service address. The TCP health check must pass before the provider starts. The first run downloads images and Python dependencies; no extra source files are needed.
 
-Open the printed `/mcp-debug` URL yourself; the headless container skips browser opening. Sign in as `OWNER_EMAIL`. HTTP reachability alone does not verify MCP—call the tool next.
+Set `USERS='["guest@example.com","/[^@]+@example\\.org/"]'` in `.env` to give coworkers MCP access. See [company access](../README.md#share-with-your-company) for matching and token lifetime details.
+
+See the [client compatibility matrix](../README.md#client-compatibility) for documented requirements, automated coverage and the limits of the partial CLI probes. The steps below are manual verification instructions, not a record of completed end-to-end client tests.
 
 ## Test with Codex
 
@@ -129,11 +136,13 @@ The MCP client may open a `localhost` callback during browser sign-in; that is n
 
 The provider hosts the approval page. Its single connection permission allows the client to use the MCP tools; your Python app implements no authorization route or permission UI. Client tool-call confirmations still apply.
 
-Reload `/mcp-debug` after the call: it should show a successful forwarding response. A plain `curl` to public `/mcp` without a token should return **401**; that is the expected access check. This MCP-only example has no app page at `/`; a 404 there is expected.
+Check the request using the printed Traffic Inspector link. A plain `curl` to public `/mcp` without a token should return **401**; that is the expected access check. This MCP-only example has no app page at `/`; a 404 there is expected.
 
 ## Keep running, stop or reconnect
 
-Access tokens last 90 days, and rotating refresh tokens share that same 90-day authorization window. Renewed access tokens are capped at the window’s remaining time; a copied bearer token remains usable until its expiry. Provider keys and OAuth state are in memory, so restarting or rebuilding requires a fresh client login. After a restart, use `codex mcp logout hello-compose` then `codex mcp login hello-compose`, or the equivalent `claude mcp logout` / `claude mcp login` commands.
+Access tokens last 90 days. Rotating refresh tokens share that same authorization window, and renewed access tokens expire when the window ends. Provider keys and OAuth records live in the `oauth-state` volume. Keep the volume, a fixed `NGROK_URL`, and the same `USERS` list to stay connected when restarting or rebuilding the provider.
+
+Changing `USERS` or the public origin clears authorizations. If you need to reconnect, run `codex mcp logout hello-compose` and then `codex mcp login hello-compose`, or use the equivalent `claude mcp logout` and `claude mcp login` commands.
 
 Restarting only the `mcp` service keeps authorization intact. View startup URLs and errors with:
 
