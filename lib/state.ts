@@ -6,6 +6,15 @@ import { openStateStorage, type S3Storage } from "./state-storage.js";
 
 export const oauthClockTolerance = 15;
 
+export class OAuthUnavailable extends errors.OIDCProviderError {
+  expose = true;
+  allow_redirect = false;
+
+  constructor(public error_description: string) {
+    super(503, "temporarily_unavailable");
+  }
+}
+
 function generateKeys() {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const kid = randomBytes(12).toString("hex");
@@ -56,27 +65,33 @@ export async function openOAuthState(
     const reuse = snapshot?.identity === identity;
     const keys = reuse ? snapshot.keys : generateKeys();
     let records = reuse ? snapshot.records : [];
+    async function persist(next: Row[]) {
+      // A fresh revision changes the S3 ETag even if all OAuth records stayed the same.
+      const snapshot: Snapshot = {
+        version: 1,
+        identity,
+        keys,
+        records: next,
+        revision: randomBytes(16).toString("hex"),
+      };
+      await store.write(JSON.stringify(snapshot));
+      records = next;
+    }
+    if (!reuse || store.remote) await persist(records);
     async function save(next: Row[]) {
       try {
-        // A fresh revision changes the S3 ETag even if all OAuth records stayed the same.
-        const snapshot: Snapshot = {
-          version: 1,
-          identity,
-          keys,
-          records: next,
-          revision: randomBytes(16).toString("hex"),
-        };
-        await store.write(JSON.stringify(snapshot));
-        records = next;
-      } catch (cause) {
-        failure = new Error(
-          `Could not save OAuth state. ${cause instanceof Error ? cause.message : "Restart the provider."}`,
-          { cause },
+        await persist(next);
+      } catch (error) {
+        failure = new OAuthUnavailable(
+          "OAuth storage is unavailable. Contact the provider operator.",
+        );
+        const detail = error instanceof Error ? ` ${error.message}` : "";
+        console.error(
+          `Could not save OAuth state.${detail} Check storage and restart MCP OAuth Provider.`,
         );
         throw failure;
       }
     }
-    if (!reuse || store.remote) await save(records);
     return { ...keys, adapter: jsonAdapter(() => records, save, run), close };
   } catch (error) {
     await close();
@@ -157,8 +172,19 @@ function jsonAdapter(
             (row) => live(row, time) && (row.model !== model || row.id !== id),
           );
           // Clients and interactions can be created before Google sign-in.
-          if (model === "Client" || model === "Interaction") {
-            const oldest = rows.filter((row) => row.model === model).at(-1000);
+          if (model === "Client") {
+            const clients = rows.filter((row) => row.model === "Client");
+            if (clients.length >= 1000) {
+              const granted = new Set(
+                rows.filter((row) => row.model === "Grant").map((row) => row.payload.clientId),
+              );
+              const oldest = clients.find((row) => !granted.has(row.id));
+              if (!oldest)
+                throw new OAuthUnavailable("OAuth client registration capacity is full.");
+              rows = rows.filter((row) => row !== oldest);
+            }
+          } else if (model === "Interaction") {
+            const oldest = rows.filter((row) => row.model === "Interaction").at(-1000);
             if (oldest) rows = rows.filter((row) => row !== oldest);
           }
           rows.push({

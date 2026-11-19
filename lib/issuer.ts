@@ -5,7 +5,7 @@ import { jsx } from "hono/jsx";
 import Provider, { errors, type AdapterFactory, type Configuration } from "oidc-provider";
 
 import { ConsentPage } from "./consent-page.js";
-import { oauthClockTolerance } from "./state.js";
+import { OAuthUnavailable, oauthClockTolerance } from "./state.js";
 
 const claudeClientId = "https://claude.ai/oauth/mcp-oauth-client-metadata";
 const claudeCallback = "https://claude.ai/api/mcp/auth_callback";
@@ -232,7 +232,7 @@ export function createIssuer({
         return reply(res, 400, "Restart authorization.");
       // The gateway already authenticated the user; only consent needs a browser form.
       if (req.method === "GET" && interaction.prompt.name === "login")
-        return provider.interactionFinished(
+        return await provider.interactionFinished(
           req,
           res,
           { login: { accountId: "owner", amr: ["ngrok"], remember: true } },
@@ -285,7 +285,7 @@ export function createIssuer({
       )
         return reply(res, 400, "Choose Authorize or Cancel.");
       if (form.get("decision") === "deny")
-        return provider.interactionFinished(
+        return await provider.interactionFinished(
           req,
           res,
           { error: "access_denied", error_description: "The user denied access." },
@@ -302,13 +302,15 @@ export function createIssuer({
       if (Array.isArray(missingOIDCScope)) grant.addOIDCScope(missingOIDCScope);
       if (Array.isArray(missingOIDCClaims)) grant.addOIDCClaims(missingOIDCClaims);
       grant.addResourceScope(resource, "mcp:use");
-      return provider.interactionFinished(
+      return await provider.interactionFinished(
         req,
         res,
         { consent: { grantId: await grant.save() } },
         { mergeWithLastSubmission: true },
       );
     } catch (error) {
+      if (error instanceof OAuthUnavailable && !res.headersSent)
+        return reply(res, error.statusCode, error.error_description);
       const status = error instanceof Error && "statusCode" in error ? error.statusCode : undefined;
       if (!res.headersSent)
         reply(

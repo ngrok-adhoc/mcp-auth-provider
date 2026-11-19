@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes, verify } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -539,6 +539,28 @@ async function checkOAuth(
     const revocation = await refresh(prior.refresh_token);
     assert.ok([400, 401].includes(revocation.status));
     assert.equal((await revocation.json()).error, "invalid_client");
+
+    const freshClient = await (await register(registration)).json();
+    const login = await authorize({ client_id: freshClient.client_id });
+    const interaction = login.headers.get("location");
+    assert.match(interaction, /^\/interaction\//);
+    await mkdir(join(project, ".mcp-oauth-provider", ".oauth.json.tmp"));
+    const page = await request(interaction, {
+      headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
+    });
+    const message = "OAuth storage is unavailable. Contact the provider operator.";
+    assert.equal(page.status, 503);
+    assert.equal(await page.text(), message);
+
+    const unavailable = await refresh(prior.refresh_token, { client_id: freshClient.client_id });
+    assert.equal(unavailable.status, 503);
+    assert.deepEqual(await unavailable.json(), {
+      error: "temporarily_unavailable",
+      error_description: message,
+    });
+    const registrationUnavailable = await register(registration);
+    assert.equal(registrationUnavailable.status, 503);
+    assert.equal((await registrationUnavailable.json()).error_description, message);
   }
 }
 

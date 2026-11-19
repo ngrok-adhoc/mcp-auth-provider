@@ -62,6 +62,8 @@ Set `NGROK_URL` to a fixed HTTPS origin and always launch the provider from the 
 
 The provider saves each change with an atomic file replacement. If a process is killed and leaves a `.lock` directory, confirm that the process has stopped before removing that empty directory and restarting.
 
+If a storage write fails, OAuth operations return a temporary service error. Check the provider logs, restore access to the state store, and restart the provider.
+
 The Compose example sets `STORAGE=local` and mounts a named volume at `/app/.mcp-oauth-provider`. Keep that volume when replacing the container. If the public origin or the `USERS` allowlist changes, the provider clears stored authorizations and rotates its signing keys at startup. Clients then need to sign in again.
 
 ### Store OAuth state in S3
@@ -328,6 +330,7 @@ Access tokens last 90 days. Rotating refresh tokens share the same 90-day author
 MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. Consent and browser sessions last one day; authorization codes last 15 minutes.
 
 - One Google email allowlist, one HTTP MCP resource, and HTTP loopback or documented ChatGPT, Cursor, and Claude HTTPS callbacks. Other hosted callbacks, multiple MCPs and stdio translation are outside this tool.
+- The provider keeps up to 1,000 dynamic client registrations. At capacity, it replaces the oldest registration without a live grant. If every registration has a live grant, new registrations receive a temporary service error until a grant expires.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
 - When the configured MCP upstream is mounted at `/`, optional app forwarding is disabled. Hostname aliases cannot safely distinguish a separate app from that root-mounted MCP server; the protected public `/mcp` route still works.
 

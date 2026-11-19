@@ -61,12 +61,13 @@ test("OAuth state is private, Git-ignored, and recovers after a process is kille
   const state = await openOAuthState(issuer, users, cwd);
   const pending = join(directory, ".oauth.json.tmp");
   await mkdir(pending);
+  const unavailable = { statusCode: 503, error: "temporarily_unavailable" };
   try {
     await assert.rejects(
       state.adapter("Session").upsert("failed", { uid: "failed" }, 60),
-      /Could not save OAuth state/,
+      unavailable,
     );
-    await assert.rejects(state.adapter("Session").find("session"), /Could not save OAuth state/);
+    await assert.rejects(state.adapter("Session").find("session"), unavailable);
   } finally {
     await rmdir(pending);
     await state.close();
@@ -95,6 +96,7 @@ test("OAuth state is private, Git-ignored, and recovers after a process is kille
 });
 
 test("S3 stores OAuth state directly and rejects stale and failed writes", async (t) => {
+  const diagnostics = t.mock.method(console, "error", () => {});
   const { createHash } = await import("node:crypto");
   const { once } = await import("node:events");
   const { createServer } = await import("node:http");
@@ -155,16 +157,17 @@ test("S3 stores OAuth state directly and rejects stale and failed writes", async
   const second = await openOAuthState(issuer, users, cwd, s3);
   t.after(() => second.close());
   assert.equal(first.kid, second.kid);
-  await assert.rejects(records.upsert("stale", { uid: "stale" }, 60), /changed in S3/);
+  const storageError = { statusCode: 503, error: "temporarily_unavailable" };
+  await assert.rejects(records.upsert("stale", { uid: "stale" }, 60), storageError);
+  assert.match(diagnostics.mock.calls[0].arguments[0], /changed in S3/);
   assert.deepEqual(await second.adapter("Session").findByUid("a"), { uid: "a" });
   assert.equal(await second.adapter("Session").find("stale"), undefined);
 
   unavailable = true;
-  await assert.rejects(
-    second.adapter("Session").upsert("lost", { uid: "lost" }, 60),
-    /Cannot save OAuth state to s3/,
-  );
-  await assert.rejects(second.adapter("Session").find("a"), /Cannot save OAuth state to s3/);
+  await assert.rejects(second.adapter("Session").upsert("lost", { uid: "lost" }, 60), storageError);
+  await assert.rejects(second.adapter("Session").find("a"), storageError);
+  assert.equal(diagnostics.mock.callCount(), 2);
+  assert.match(diagnostics.mock.calls[1].arguments[0], /Cannot save OAuth state to s3.*restart/);
   assert.equal(JSON.parse(snapshot).records.length, 2);
   await assert.rejects(stat(join(cwd, ".mcp-oauth-provider")), { code: "ENOENT" });
 
@@ -173,6 +176,47 @@ test("S3 stores OAuth state directly and rejects stale and failed writes", async
   t.after(() => changed.close());
   assert.notEqual(changed.kid, first.kid);
   assert.equal(await changed.adapter("Session").find("a"), undefined);
+});
+
+test("registration evicts only clients without live grants", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "mcp-oauth-registration-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const issuer = "https://provider.example";
+  const users = ["owner@example.com"];
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  await (await openOAuthState(issuer, users, cwd)).close();
+  const filename = join(cwd, ".mcp-oauth-provider", "oauth.json");
+  const snapshot = JSON.parse(await readFile(filename, "utf8"));
+  const soon = Math.floor(now / 1000) + 60;
+  for (let id = 0; id < 1000; id++) {
+    const clientId = String(id);
+    snapshot.records.push(
+      { model: "Client", id: clientId, payload: { client_id: clientId } },
+      { model: "Grant", id: clientId, payload: { clientId }, expires: id === 1 ? soon - 61 : soon },
+    );
+  }
+  await writeFile(filename, JSON.stringify(snapshot));
+  const state = await openOAuthState(issuer, users, cwd);
+  try {
+    const clients = state.adapter("Client");
+    await clients.upsert("new", { client_id: "new" });
+    assert.ok(await clients.find("0"));
+    assert.equal(await clients.find("1"), undefined);
+    await state.adapter("Grant").upsert("new", { clientId: "new" }, 60);
+    const beforeRejection = await readFile(filename, "utf8");
+    await assert.rejects(clients.upsert("extra", { client_id: "extra" }), {
+      statusCode: 503,
+      error_description: "OAuth client registration capacity is full.",
+    });
+    assert.equal(await readFile(filename, "utf8"), beforeRejection);
+    await state.adapter("Grant").destroy("0");
+    await clients.upsert("extra", { client_id: "extra" });
+    assert.equal(await clients.find("0"), undefined);
+    assert.ok(await clients.find("extra"));
+  } finally {
+    await state.close();
+  }
 });
 
 test("automatic S3 falls back without credentials and required S3 fails closed", async (t) => {
