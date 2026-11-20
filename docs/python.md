@@ -140,7 +140,7 @@ Check the request using the printed Traffic Inspector link. A plain `curl` to pu
 
 ## Keep running, stop or reconnect
 
-Access tokens last 90 days. Rotating refresh tokens share that same authorization window, and renewed access tokens expire when the window ends. Provider keys and OAuth records live in the `oauth-state` volume. Keep the volume, a fixed `NGROK_URL`, and the same `USERS` list to stay connected when restarting or rebuilding the provider.
+Access tokens last one hour. Rotating refresh tokens share a 90-day authorization window, and renewed access tokens expire no later than that window. Provider keys and OAuth records live in the `oauth-state` volume. Keep the volume, a fixed `NGROK_URL`, and the same `USERS` list to stay connected when restarting or rebuilding the provider.
 
 Changing `USERS` or the public origin clears authorizations. If you need to reconnect, run `codex mcp logout hello-compose` and then `codex mcp login hello-compose`, or use the equivalent `claude mcp logout` and `claude mcp login` commands.
 

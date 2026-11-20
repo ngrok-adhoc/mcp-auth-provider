@@ -52,7 +52,7 @@ APP_URL=http://127.0.0.1:3000
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
-Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_SERVER_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
+Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_SERVER_URL` includes the existing MCP path. The `APP_URL` website shares the public origin with the OAuth sign-in and consent pages, so only forward a website whose scripts you fully trust. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
 
 If the MCP server uses an ngrok internal endpoint in the same account, set `MCP_SERVER_BINDING=internal` and use its `.internal` URL ending in `/mcp` for `MCP_SERVER_URL`. The gateway forwards authenticated requests to that endpoint. If the upstream checks the HTTP Host header, allow the public provider hostname.
 
@@ -62,7 +62,7 @@ The provider reads `.env` from the **working directory**. Existing environment v
 
 Set `NGROK_URL` to a fixed HTTPS origin and always launch the provider from the same project directory. The provider stores its signing keys, OAuth registrations, browser sessions, and grants in `.mcp-oauth-provider/oauth.json`. It creates the directory with owner-only access and a Git ignore rule. Keep the directory private and use one provider process per state directory. Use Docker on Windows.
 
-The provider saves each change with an atomic file replacement. If a process is killed and leaves a `.lock` directory, confirm that the process has stopped before removing that empty directory and restarting.
+The provider saves each change with an atomic file replacement. The `.lock` directory records the machine and process that hold it. A lock left by a provider process that has exited on the same machine is cleared automatically. Containers can't check each other's processes, so after a container is killed, confirm no other provider uses the volume and remove the lock by hand, for example `docker compose run --rm --entrypoint rm provider -rf /app/.mcp-oauth-provider/.lock`. Run one provider per state directory.
 
 If a storage write fails, OAuth operations return a temporary service error. Check the provider logs, restore access to the state store, and restart the provider.
 
@@ -77,9 +77,11 @@ STORAGE=s3
 AWS_REGION=ap-southeast-2
 S3_BUCKET=your-private-bucket
 S3_KEY=mcp-oauth-provider/oauth.json
+# Recommended: the 12-digit AWS account ID that owns the bucket.
+S3_BUCKET_OWNER=123456789012
 ```
 
-Use the AWS SDK's standard credential chain, such as the deployment's IAM role or the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` environment variables. Use a private bucket and a separate key per provider. The snapshot contains private signing keys and live OAuth credentials. Grant `s3:GetObject` and `s3:PutObject` on the state object. For the first startup with an absent object, allow `s3:ListBucket` so S3 can report that the key does not exist.
+Use the AWS SDK's standard credential chain, such as the deployment's IAM role or the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` environment variables. Use a private bucket and a separate key per provider. The snapshot contains private signing keys and live OAuth credentials. Set `S3_BUCKET_OWNER` so S3 rejects reads and writes if the bucket name ever belongs to another account, for example after a typo or a deleted bucket. Grant `s3:GetObject` and `s3:PutObject` on the state object. For the first startup with an absent object, allow `s3:ListBucket` so S3 can report that the key does not exist.
 
 With `STORAGE=s3`, startup fails if the provider cannot access S3. With `STORAGE` omitted, the provider uses S3 when it has a bucket and AWS credentials and otherwise uses local JSON. Set `STORAGE=local` to always use the filesystem. S3 mode writes directly to the object and requires no local state volume. Run a single provider instance per object. Conditional writes prevent a stale instance from overwriting newer state.
 
@@ -106,6 +108,8 @@ USERS='["you@example.com","guest@example.com","/[^@]+@example\\.org/"]'
 ```
 
 Use an exact email or wrap a regular expression in `/…/`. The provider compares against the whole Google email after lowercasing its ASCII letters. Write regexes in RE2 syntax and escape backslashes for JSON, as in the domain pattern above. That pattern matches `someone@example.org`.
+
+A domain pattern matches any Google account using that email address, including personal Google accounts created with a work address. ngrok does not expose Google's hosted-domain claim, so list exact emails when that matters.
 
 All admitted accounts get the same tool permissions. The provider uses a shared account internally and forwards MCP requests to the upstream without the Google identity.
 
@@ -176,7 +180,7 @@ Claude's hosted connector uses `https://claude.ai/api/mcp/auth_callback`. Anthro
 
 ### Finish end-to-end verification
 
-For each client, start the provider and an existing HTTP MCP server, add the public URL, and complete Google sign-in with an allowed account. Confirm the client discovers tools, call a harmless tool and verify its real result in the client and check the request in Traffic Inspector. Repeat with an outside-domain account and confirm access is denied. Testing client-managed refresh requires observing an actual renewal; the provider tests exercise refresh directly rather than waiting for the 90-day access-token lifetime. If the issuer or allowlist changes, clear the client’s saved authentication and reconnect.
+For each client, start the provider and an existing HTTP MCP server, add the public URL, and complete Google sign-in with an allowed account. Confirm the client discovers tools, call a harmless tool and verify its real result in the client and check the request in Traffic Inspector. Repeat with an outside-domain account and confirm access is denied. Testing client-managed refresh requires observing an actual renewal; the provider tests exercise refresh directly rather than waiting for the one-hour access-token lifetime. If the issuer or allowlist changes, clear the client’s saved authentication and reconnect.
 
 ## Test in ChatGPT web
 
@@ -327,11 +331,12 @@ Open the printed [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-i
 
 ## Development limits
 
-Access tokens last 90 days. Rotating refresh tokens share the same 90-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until it expires or the provider rotates its signing key. This is a local development tool.
+Access tokens last one hour. Rotating refresh tokens share a 90-day authorization window, and renewed access tokens expire no later than that window. A copied access token remains usable until it expires or the provider rotates its signing key. Reusing a rotated refresh token revokes the authorization, so no new access tokens are issued for it. This is a local development tool.
 
-MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. Consent and browser sessions last one day; authorization codes last 15 minutes.
+MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. Browser sessions last one day, and every authorization shows the consent page; authorization codes last 15 minutes.
 
 - One Google email allowlist, one HTTP MCP resource, and HTTP loopback or documented ChatGPT, Cursor, and Claude HTTPS callbacks. Other hosted callbacks, multiple MCPs and stdio translation are outside this tool.
+- `/reg` and `/auth` are rate-limited per client IP (30 requests per minute at each ngrok edge server). Client metadata must be smaller than 4 KiB, and only the `query` response mode is accepted. A client registered by an older version with larger metadata or another response mode must disconnect and reconnect to register again.
 - The provider keeps up to 1,000 dynamic client registrations. At capacity, it replaces the oldest registration without a live grant. If every registration has a live grant, new registrations receive a temporary service error until a grant expires.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
 - When the configured MCP upstream is mounted at `/`, optional app forwarding is disabled. Hostname aliases cannot safely distinguish a separate app from that root-mounted MCP server; the protected public `/mcp` route still works.

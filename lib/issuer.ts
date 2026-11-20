@@ -2,7 +2,12 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { jsx } from "hono/jsx";
-import Provider, { errors, type AdapterFactory, type Configuration } from "oidc-provider";
+import Provider, {
+  errors,
+  interactionPolicy,
+  type AdapterFactory,
+  type Configuration,
+} from "oidc-provider";
 
 import { ConsentPage } from "./consent-page.js";
 import { OAuthUnavailable, oauthClockTolerance } from "./state.js";
@@ -63,6 +68,26 @@ export function createIssuer({
     throw new Error("Resource must be an HTTPS URL (HTTP loopback is allowed for tests).");
   }
   resource = target.href;
+  const iconSource = mcpServerIcon?.protocol === "https:" ? mcpServerIcon.origin : "data:";
+  const securityHeaders = (callbackOrigin = "") => ({
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    // Browser form redirects must reach this already-validated client callback.
+    "Content-Security-Policy": `default-src 'none'; style-src 'self';${callbackOrigin ? ` img-src ${iconSource};` : ""} form-action 'self' ${callbackOrigin}; frame-ancestors 'none'`,
+  });
+  // Consent every time: a remembered grant would let /auth, which has no Google gate, skip the gated consent page.
+  const policy = interactionPolicy.base();
+  policy
+    .get("consent")!
+    .checks.add(
+      new interactionPolicy.Check("always_consent", "consent is required", (ctx) =>
+        ctx.oidc.result?.consent
+          ? interactionPolicy.Check.NO_NEED_TO_PROMPT
+          : interactionPolicy.Check.REQUEST_PROMPT,
+      ),
+    );
   const provider = new Provider(base.origin, {
     jwks,
     adapter,
@@ -78,6 +103,8 @@ export function createIssuer({
       application_type: "native",
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
+      // form_post would put the code in a page on this origin, readable by an APP_URL script.
+      response_modes: ["query"],
       token_endpoint_auth_method: "none",
     },
     extraClientMetadata: {
@@ -99,14 +126,17 @@ export function createIssuer({
               !(publishedClaude && type === "urn:ietf:params:oauth:grant-type:jwt-bearer"),
           ) ||
           !Array.isArray(metadata.response_types) ||
-          metadata.response_types.some((type) => type !== "code")
+          metadata.response_types.some((type) => type !== "code") ||
+          (metadata.response_modes !== undefined &&
+            JSON.stringify(metadata.response_modes) !== '["query"]')
         ) {
           throw new errors.InvalidClientMetadata(
             "Only public authorization-code clients are supported.",
           );
         }
         if (
-          Buffer.byteLength(JSON.stringify(metadata)) > 16384 ||
+          // Anonymous registrations are persisted, so keep each one small.
+          Buffer.byteLength(JSON.stringify(metadata)) > 4096 ||
           !Array.isArray(metadata.redirect_uris) ||
           (publishedClaude &&
             (metadata.redirect_uris.length !== 1 ||
@@ -115,7 +145,8 @@ export function createIssuer({
             (metadata.application_type !== "native" ||
               metadata.redirect_uris.some((uri) => !codexCallbacks.includes(uri)))) ||
           metadata.redirect_uris.some((value) => {
-            const url = new URL(value);
+            const url = URL.parse(value);
+            if (!url) return true;
             const loopback =
               url.protocol === "http:" &&
               ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
@@ -135,7 +166,7 @@ export function createIssuer({
           })
         )
           throw new errors.InvalidClientMetadata(
-            "Use HTTP loopback or documented ChatGPT, Cursor, or Claude OAuth callbacks and metadata smaller than 16 KiB.",
+            "Use HTTP loopback or documented ChatGPT, Cursor, or Claude OAuth callbacks and metadata smaller than 4 KiB.",
           );
       },
     },
@@ -144,6 +175,10 @@ export function createIssuer({
     pkce: { required: () => true },
     features: {
       devInteractions: { enabled: false },
+      // On by default but unused here: ngrok ignores DPoP binding, and PAR and logout are not routed.
+      dPoP: { enabled: false },
+      pushedAuthorizationRequests: { enabled: false },
+      rpInitiatedLogout: { enabled: false },
       registration: { enabled: true, issueRegistrationAccessToken: false },
       clientIdMetadataDocument: {
         enabled: claudeCimd,
@@ -166,16 +201,23 @@ export function createIssuer({
         },
       },
     },
-    interactions: { url: (_ctx, interaction) => `/interaction/${interaction.uid}` },
+    interactions: { policy, url: (_ctx, interaction) => `/interaction/${interaction.uid}` },
+    renderError(ctx, out) {
+      ctx.set(securityHeaders());
+      ctx.type = "text/plain; charset=utf-8";
+      ctx.body = `${out.error_description ?? out.error}\nRestart authorization from your MCP client.`;
+    },
     findAccount: (_ctx, id) => ({ accountId: id, claims: async () => ({ sub: id }) }),
     issueRefreshToken: (_ctx, client) => client.grantTypeAllowed("refresh_token"),
     rotateRefreshToken: true,
-    // Access and refresh expire with the original grant, even after rotation or browser-session expiry.
+    // Refresh tokens expire with the original grant, even after rotation or browser-session expiry.
     expiresWithSession: () => false,
     ttl: {
-      AccessToken: (ctx) => ctx.oidc.entities.Grant!.remainingTTL,
+      // Access tokens are stateless JWTs, so keep them short; revoking the grant stops refresh.
+      AccessToken: (ctx) => Math.min(60 * 60, ctx.oidc.entities.Grant!.remainingTTL),
       AuthorizationCode: 15 * 60,
-      Interaction: 24 * 60 * 60,
+      // Sign-in takes minutes; a short TTL keeps the in-memory interaction store small.
+      Interaction: 60 * 60,
       Session: 24 * 60 * 60,
       Grant: 90 * 24 * 60 * 60,
       RefreshToken: (ctx) => ctx.oidc.entities.Grant!.remainingTTL,
@@ -188,11 +230,24 @@ export function createIssuer({
       query.set("scope", "mcp:use");
       ctx.querystring = query.toString();
     }
-    await next();
+    try {
+      await next();
+    } catch (error) {
+      // oidc-provider saves the session again after its own error page, so outages can surface here.
+      if (!(error instanceof OAuthUnavailable) || ctx.headerSent) throw error;
+      ctx.status = error.statusCode;
+      ctx.set(securityHeaders());
+      ctx.type = "text/plain; charset=utf-8";
+      ctx.body = error.error_description;
+      return;
+    }
+    // oidc-provider hardcodes this list; every client here is restricted to query responses.
+    const body = ctx.body as { response_modes_supported?: string[] } | undefined;
+    if (ctx.path === "/.well-known/openid-configuration" && body?.response_modes_supported)
+      body.response_modes_supported = ["query"];
   });
   const callback = provider.callback();
   const csrf = (uid: string) => createHmac("sha256", cookieKey).update(uid).digest("base64url");
-  const iconSource = mcpServerIcon?.protocol === "https:" ? mcpServerIcon.origin : "data:";
   function reply(
     res: ServerResponse,
     status: number,
@@ -200,14 +255,9 @@ export function createIssuer({
     type = "text/plain",
     callbackOrigin = "",
   ) {
-    const iconPolicy = callbackOrigin ? ` img-src ${iconSource};` : "";
     res.writeHead(status, {
       "Content-Type": `${type}; charset=utf-8`,
-      "Cache-Control": "no-store",
-      "Referrer-Policy": "same-origin",
-      "X-Frame-Options": "DENY",
-      // Browser form redirects must reach this already-validated client callback.
-      "Content-Security-Policy": `default-src 'none'; style-src 'self';${iconPolicy} form-action 'self' ${callbackOrigin}; frame-ancestors 'none'`,
+      ...securityHeaders(callbackOrigin),
     });
     res.end(message);
   }

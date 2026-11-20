@@ -102,8 +102,12 @@ function readStorage(values: NodeJS.ProcessEnv): S3Storage | undefined {
     throw new Error(
       "Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or use the AWS credential chain.",
     );
+  const owner = values.S3_BUCKET_OWNER?.trim() || undefined;
+  if (owner && !/^\d{12}$/.test(owner))
+    throw new Error("Set S3_BUCKET_OWNER to the 12-digit AWS account ID that owns S3_BUCKET.");
   return {
     bucket,
+    owner,
     key: values.S3_KEY?.trim() || "mcp-oauth-provider/oauth.json",
     region: values.AWS_REGION?.trim() || undefined,
     profile: values.AWS_PROFILE?.trim() || undefined,

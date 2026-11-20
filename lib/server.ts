@@ -116,10 +116,13 @@ export async function startServers({
   const consentStyles = readFileSync(new URL("../../assets/consent.css", import.meta.url), "utf8");
   const browser = new Hono();
   const expected = Buffer.from(gatewaySecret);
+  const fromGateway = (value: unknown) => {
+    const secret = Buffer.from(typeof value === "string" ? value : "");
+    return secret.length === expected.length && timingSafeEqual(secret, expected);
+  };
   browser.all(consentStylesPath, (c) => {
     c.header("Cache-Control", "no-store");
-    const secret = Buffer.from(c.req.header("x-mcp-oauth-provider-secret") ?? "");
-    if (secret.length !== expected.length || !timingSafeEqual(secret, expected))
+    if (!fromGateway(c.req.header("x-mcp-oauth-provider-secret")))
       return c.text("Open this authorization page through the ngrok sign-in gateway.", 403);
     if (c.req.method !== "GET") return c.text("Use GET.", 405, { Allow: "GET" });
     return c.body(consentStyles, 200, {
@@ -156,6 +159,9 @@ export async function startServers({
     try {
       const path = new URL(req.url ?? "/", issuer).pathname;
       if (path !== "/mcp") return json(res, 404, { error: "Use /mcp." });
+      // Blocks other local processes, DNS-rebound pages, and other endpoints in the ngrok account.
+      if (!fromGateway(req.headers["x-mcp-oauth-provider-secret"]))
+        return json(res, 403, { error: "Use the protected public /mcp connection URL." });
       forwardMcp(req, res);
     } catch {
       json(res, 400, { error: "Invalid request. Check the URL and retry." });

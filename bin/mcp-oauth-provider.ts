@@ -40,6 +40,7 @@ Run this command from your MCP server’s project directory. Settings come from 
   STORAGE          local or s3 (omit for automatic selection)
   S3_BUCKET        Bucket for OAuth state
   S3_KEY           Optional S3 object key (default mcp-oauth-provider/oauth.json)
+  S3_BUCKET_OWNER  Recommended AWS account ID that owns S3_BUCKET
   AWS_REGION       AWS region for S3
 
 Your MCP server keeps its existing code. No separate web app is required. Paid internal endpoints required.

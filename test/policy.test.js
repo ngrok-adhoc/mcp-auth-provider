@@ -22,7 +22,9 @@ test("only allowed Google accounts receive trusted helper access", () => {
   assert.equal(google.length, 1);
   assert.match(expression(google[0]), /interaction/);
   assert.match(expression(google[0]), /ngrok/);
-  const grants = withAction(rules, "add-headers");
+  const grants = withAction(rules, "add-headers").filter((rule) =>
+    expression(rule).includes("interaction"),
+  );
   assert.equal(grants.length, 1);
   assert.ok(
     expression(grants[0]).includes(`identity.email.lowerAscii() == ${JSON.stringify(adminEmail)}`),
@@ -44,9 +46,9 @@ test("MCP forwarding requires an exact positive validator response and fails clo
   assert.ok(expression(forwarding).includes(`body == '{"valid":true}'`));
   assert.equal(forwarding.actions[0].type, "remove-headers");
   assert.deepEqual(forwarding.actions[0].config.headers, ["authorization"]);
-  assert.equal(forwarding.actions[1].config.on_error, "continue");
-  assert.equal(forwarding.actions[2].config.status_code, 503);
-  assert.match(forwarding.actions[2].config.body, /MCP_SERVER_URL/);
+  assert.equal(forwarding.actions.at(-2).config.on_error, "continue");
+  assert.equal(forwarding.actions.at(-1).config.status_code, 503);
+  assert.match(forwarding.actions.at(-1).config.body, /MCP_SERVER_URL/);
   const after = rules[rules.indexOf(forwarding) + 1];
   assert.equal(after.actions[0].config.status_code, 401);
   assert.match(after.actions[0].config.headers["www-authenticate"], /resource_metadata=/);
@@ -112,7 +114,9 @@ test("exact addresses and regexes can authorize MCP users", () => {
       { regex: "\\A(?:[^@]+@ngrok\\.com|guest@example\\.org)\\z" },
     ],
   }).on_http_request;
-  const grants = withAction(rules, "add-headers");
+  const grants = withAction(rules, "add-headers").filter((rule) =>
+    expression(rule).includes("interaction"),
+  );
   const denials = rules.filter((rule) =>
     rule.actions.some((action) => action.config?.status_code === 403),
   );
@@ -199,4 +203,24 @@ test("website fallback preserves MCP and OAuth paths in Traffic Policy", () => {
   ]) {
     assert.equal(blocked.matcher(decodeURIComponent(path).toLowerCase()).find(), true, path);
   }
+});
+
+test("anonymous OAuth endpoints are rate limited and only the policy can reach the local MCP proxy", () => {
+  const rules = createPolicy(settings).on_http_request;
+  const [limit, ...others] = withAction(rules, "rate-limit");
+  assert.equal(others.length, 0);
+  assert.match(expression(limit), /'\/reg'/);
+  assert.match(expression(limit), /'\/auth'/);
+  assert.deepEqual(limit.actions[0].config.bucket_key, ["conn.client_ip"]);
+  const mcpForward = (policy) =>
+    withAction(policy.on_http_request, "forward-internal").find((rule) =>
+      rule.actions.some((action) => action.config?.url === settings.mcpInternalUrl),
+    );
+  const secret = mcpForward(createPolicy(settings)).actions.find(
+    (action) => action.type === "add-headers",
+  );
+  assert.equal(secret.config.headers["x-mcp-oauth-provider-secret"], settings.gatewaySecret);
+  // A user-owned internal MCP endpoint must never receive the gateway secret.
+  const internal = mcpForward(createPolicy({ ...settings, stripMcpQuery: true }));
+  assert.ok(!internal.actions.some((action) => action.type === "add-headers"));
 });
