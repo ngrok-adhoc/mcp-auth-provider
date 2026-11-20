@@ -72,6 +72,24 @@ export function createPolicy({
         ],
       },
       {
+        // Registration and authorization run before Google sign-in and write OAuth state.
+        expressions: [
+          "req.url.path == '/reg' || req.url.path == '/auth' || req.url.path.startsWith('/auth/')",
+        ],
+        actions: [
+          {
+            type: "rate-limit",
+            config: {
+              name: "OAuth registration and authorization",
+              algorithm: "sliding_window",
+              capacity: 30,
+              rate: "60s",
+              bucket_key: ["conn.client_ip"],
+            },
+          },
+        ],
+      },
+      {
         expressions: [`${interaction} || req.url.path.startsWith('/ngrok/')`],
         actions: [{ type: "oauth", config: { provider: "google" } }],
       },
@@ -179,9 +197,15 @@ export function createPolicy({
         ],
         actions: [
           { type: "remove-headers", config: { headers: ["authorization"] } },
+          // The local proxy requires the gateway secret, so only this policy can reach it.
           ...(stripMcpQuery
             ? [{ type: "url-rewrite", config: { from: "^([^?]+)\\?.*$", to: "$1" } }]
-            : []),
+            : [
+                {
+                  type: "add-headers",
+                  config: { headers: { "x-mcp-oauth-provider-secret": gatewaySecret } },
+                },
+              ]),
           { type: "forward-internal", config: { url: mcpInternalUrl, on_error: "continue" } },
           json(
             {

@@ -8,3 +8,4 @@ node_modules/
 
 dist/
 /.mcp-oauth-provider/
+/specs/

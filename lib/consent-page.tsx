@@ -59,7 +59,7 @@ export function ConsentPage({
               tools.
             </p>
           </div>
-          <details>
+          <details open>
             <summary>Connection details</summary>
             <dl>
               <div>

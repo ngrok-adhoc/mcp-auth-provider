@@ -5,16 +5,19 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   renameSync,
-  rmdirSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 export interface S3Storage {
   bucket: string;
   key: string;
+  owner?: string;
   required: boolean;
   region?: string;
   profile?: string;
@@ -30,6 +33,32 @@ interface StateStorage {
 
 function hasCode(error: unknown, code: string) {
   return error instanceof Error && "code" in error && error.code === code;
+}
+
+function readHolder(path: string) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return "";
+    throw error;
+  }
+}
+
+function pidNamespace() {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return "";
+  }
+}
+
+function running(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return hasCode(error, "EPERM");
+  }
 }
 
 export async function openStateStorage(cwd: string, s3?: S3Storage): Promise<StateStorage> {
@@ -57,13 +86,27 @@ function openFileStorage(cwd: string): StateStorage {
   const filename = join(directory, "oauth.json");
   const pending = join(directory, ".oauth.json.tmp");
   const lock = join(directory, ".lock");
-  try {
-    mkdirSync(lock, { mode: 0o700 });
-  } catch (error) {
-    if (!hasCode(error, "EEXIST")) throw error;
-    throw new Error(
-      `OAuth state is already locked at ${lock}. Confirm the prior provider has stopped before removing the empty lock directory.`,
-    );
+  const holder = join(lock, "holder");
+  // PIDs are only comparable inside one PID namespace, so containers sharing a hostname never match.
+  const host = `${hostname()}/${pidNamespace()}`;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      writeFileSync(holder, `${host} ${process.pid}`, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (error) {
+      if (!hasCode(error, "EEXIST")) throw error;
+      // A lock left by a process that has exited on this machine is stale.
+      // shortcut: two providers starting at once after a crash can both clear the same stale lock; run one at a time.
+      const [holderHost, id] = readHolder(holder).split(" ");
+      const pid = Number(id);
+      const stale = holderHost === host && pid > 0 && Number.isSafeInteger(pid) && !running(pid);
+      if (attempt || !stale)
+        throw new Error(
+          `OAuth state is already locked at ${lock}. Confirm the prior provider has stopped before removing the lock directory.`,
+        );
+      rmSync(lock, { recursive: true });
+    }
   }
 
   return {
@@ -92,7 +135,7 @@ function openFileStorage(cwd: string): StateStorage {
       }
     },
     close() {
-      rmdirSync(lock);
+      rmSync(lock, { recursive: true });
     },
   };
 }
@@ -100,6 +143,7 @@ function openFileStorage(cwd: string): StateStorage {
 async function openS3({
   bucket,
   key,
+  owner,
   required,
   region,
   profile,
@@ -115,7 +159,8 @@ async function openS3({
     if (!required && error instanceof Error && error.name === "CredentialsProviderError") return;
     throw new Error("Cannot resolve AWS credentials for OAuth state.", { cause: error });
   }
-  const object = { Bucket: bucket, Key: key };
+  // Pins the bucket's AWS account so a mistyped or reclaimed name can't receive the signing key.
+  const object = { Bucket: bucket, Key: key, ExpectedBucketOwner: owner };
   let etag: string | undefined;
   return {
     remote: true,

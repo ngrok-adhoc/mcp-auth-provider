@@ -52,7 +52,7 @@ APP_URL=http://127.0.0.1:3000
 # NGROK_URL=https://your-assigned-dev-domain.ngrok-free.app
 ```
 
-Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_SERVER_URL` includes the existing MCP path. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
+Upstreams are trusted HTTP(S) URLs from your `.env` or environment. Use loopback addresses locally, or host/service names on a private Docker network; never accept these settings from a public request. `APP_URL` is an origin; `MCP_SERVER_URL` includes the existing MCP path. The `APP_URL` website shares the public origin with the OAuth sign-in and consent pages, so only forward a website whose scripts you fully trust. `NGROK_URL`, when set, is an HTTPS origin available to your account. A dev-domain name does not make the required paid actions free.
 
 If the MCP server uses an ngrok internal endpoint in the same account, set `MCP_SERVER_BINDING=internal` and use its `.internal` URL ending in `/mcp` for `MCP_SERVER_URL`. The gateway forwards authenticated requests to that endpoint. If the upstream checks the HTTP Host header, allow the public provider hostname.
 
@@ -62,7 +62,7 @@ The provider reads `.env` from the **working directory**. Existing environment v
 
 Set `NGROK_URL` to a fixed HTTPS origin and always launch the provider from the same project directory. The provider stores its signing keys, OAuth registrations, browser sessions, and grants in `.mcp-oauth-provider/oauth.json`. It creates the directory with owner-only access and a Git ignore rule. Keep the directory private and use one provider process per state directory. Use Docker on Windows.
 
-The provider saves each change with an atomic file replacement. If a process is killed and leaves a `.lock` directory, confirm that the process has stopped before removing that empty directory and restarting.
+The provider saves each change with an atomic file replacement. The `.lock` directory records the machine and process that hold it. A lock left by a provider process that has exited on the same machine is cleared automatically. Containers can't check each other's processes, so after a container is killed, confirm no other provider uses the volume and remove the lock by hand, for example `docker compose run --rm --entrypoint rm provider -rf /app/.mcp-oauth-provider/.lock`. Run one provider per state directory.
 
 If a storage write fails, OAuth operations return a temporary service error. Check the provider logs, restore access to the state store, and restart the provider.
 
@@ -77,9 +77,11 @@ STORAGE=s3
 AWS_REGION=ap-southeast-2
 S3_BUCKET=your-private-bucket
 S3_KEY=mcp-oauth-provider/oauth.json
+# Recommended: the 12-digit AWS account ID that owns the bucket.
+S3_BUCKET_OWNER=123456789012
 ```
 
-Use the AWS SDK's standard credential chain, such as the deployment's IAM role or the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` environment variables. Use a private bucket and a separate key per provider. The snapshot contains private signing keys and live OAuth credentials. Grant `s3:GetObject` and `s3:PutObject` on the state object. For the first startup with an absent object, allow `s3:ListBucket` so S3 can report that the key does not exist.
+Use the AWS SDK's standard credential chain, such as the deployment's IAM role or the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN` environment variables. Use a private bucket and a separate key per provider. The snapshot contains private signing keys and live OAuth credentials. Set `S3_BUCKET_OWNER` so S3 rejects reads and writes if the bucket name ever belongs to another account, for example after a typo or a deleted bucket. Grant `s3:GetObject` and `s3:PutObject` on the state object. For the first startup with an absent object, allow `s3:ListBucket` so S3 can report that the key does not exist.
 
 With `STORAGE=s3`, startup fails if the provider cannot access S3. With `STORAGE` omitted, the provider uses S3 when it has a bucket and AWS credentials and otherwise uses local JSON. Set `STORAGE=local` to always use the filesystem. S3 mode writes directly to the object and requires no local state volume. Run a single provider instance per object. Conditional writes prevent a stale instance from overwriting newer state.
 
@@ -106,6 +108,8 @@ USERS='["you@example.com","guest@example.com","/[^@]+@example\\.org/"]'
 ```
 
 Use an exact email or wrap a regular expression in `/…/`. The provider compares against the whole Google email after lowercasing its ASCII letters. Write regexes in RE2 syntax and escape backslashes for JSON, as in the domain pattern above. That pattern matches `someone@example.org`.
+
+A domain pattern matches any Google account using that email address, including personal Google accounts created with a work address. ngrok does not expose Google's hosted-domain claim, so list exact emails when that matters.
 
 All admitted accounts get the same tool permissions. The provider uses a shared account internally and forwards MCP requests to the upstream without the Google identity.
 
@@ -176,7 +180,7 @@ Claude's hosted connector uses `https://claude.ai/api/mcp/auth_callback`. Anthro
 
 ### Finish end-to-end verification
 
-For each client, start the provider and an existing HTTP MCP server, add the public URL, and complete Google sign-in with an allowed account. Confirm the client discovers tools, call a harmless tool and verify its real result in the client and check the request in Traffic Inspector. Repeat with an outside-domain account and confirm access is denied. Testing client-managed refresh requires observing an actual renewal; the provider tests exercise refresh directly rather than waiting for the 90-day access-token lifetime. If the issuer or allowlist changes, clear the client’s saved authentication and reconnect.
+For each client, start the provider and an existing HTTP MCP server, add the public URL, and complete Google sign-in with an allowed account. Confirm the client discovers tools, call a harmless tool and verify its real result in the client and check the request in Traffic Inspector. Repeat with an outside-domain account and confirm access is denied. Testing client-managed refresh requires observing an actual renewal; the provider tests exercise refresh directly rather than waiting for the one-hour access-token lifetime. If the issuer or allowlist changes, clear the client’s saved authentication and reconnect.
 
 ## Test in ChatGPT web
 
@@ -218,7 +222,7 @@ Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/au
 
 Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python, Node installation or repository checkout is needed.
 
-> The image is published but currently private. Registry pulls require an authorized GitHub login with package-read access and any organization SSO approval. For a local build, follow [Build the image locally](#build-the-image-locally).
+The image is public on GitHub Container Registry, so no registry login is needed. To use a local build instead, follow [Build the image locally](#build-the-image-locally).
 
 ```sh
 mkdir mcp-demo
@@ -235,8 +239,6 @@ USERS='["you@example.com"]'
 ```
 
 Use your **ngrok agent authtoken**, not an API key. Keep `.env` private and out of Git. Copy the single [Compose example from the tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md#start-the-stack) into `compose.yaml` in the same directory, then run:
-
-For a registry pull, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` with a classic PAT that has package-read access and the required organization SSO authorization. Local builds use `--pull never` instead.
 
 ```sh
 docker compose --env-file .env up -d
@@ -327,11 +329,12 @@ Open the printed [ngrok Traffic Inspector](https://dashboard.ngrok.com/traffic-i
 
 ## Development limits
 
-Access tokens last 90 days. Rotating refresh tokens share the same 90-day authorization window; renewed access tokens expire when that window ends. A copied bearer token remains usable until it expires or the provider rotates its signing key. This is a local development tool.
+Access tokens last one hour. Rotating refresh tokens share a 90-day authorization window, and renewed access tokens expire no later than that window. A copied access token remains usable until it expires or the provider rotates its signing key. Reusing a rotated refresh token revokes the authorization, so no new access tokens are issued for it. This is a local development tool.
 
-MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. Consent and browser sessions last one day; authorization codes last 15 minutes.
+MCP upstreams get two minutes to establish a connection. Once connected, tool calls may wait for response headers or stream until completion or client cancellation. Browser sessions last one day, and every authorization shows the consent page; authorization codes last 15 minutes.
 
 - One Google email allowlist, one HTTP MCP resource, and HTTP loopback or documented ChatGPT, Cursor, and Claude HTTPS callbacks. Other hosted callbacks, multiple MCPs and stdio translation are outside this tool.
+- `/reg` and `/auth` are rate-limited per client IP (30 requests per minute at each ngrok edge server). Client metadata must be smaller than 4 KiB, and only the `query` response mode is accepted. A client registered by an older version with larger metadata or another response mode must disconnect and reconnect to register again.
 - The provider keeps up to 1,000 dynamic client registrations. At capacity, it replaces the oldest registration without a live grant. If every registration has a live grant, new registrations receive a temporary service error until a grant expires.
 - Keep local listeners private. Only configured public routes should reach the app and MCP.
 - When the configured MCP upstream is mounted at `/`, optional app forwarding is disabled. Hostname aliases cannot safely distinguish a separate app from that root-mounted MCP server; the protected public `/mcp` route still works.
@@ -359,7 +362,7 @@ npm run tag-release -- 0.1.0
 
 The command creates an annotated `v0.1.0` tag without overwriting existing tags. Its push runs **Publish image**, publishing Linux amd64/arm64 images to `ghcr.io/ngrok-adhoc/mcp-oauth-provider` with `0.1.0`, `v0.1.0`, a commit SHA tag and `latest`. Main-branch builds only warm the build cache. Wait for the image workflow to succeed before updating tutorial image versions.
 
-The GHCR package remains private. Consumers need package-read access and an authorized registry login; organization SSO approval may also be required. Public visibility and anonymous-pull verification are deferred. A successful publishing workflow does not prove that a consumer can pull the image.
+Package visibility is set in the GHCR package settings, not by the workflow. After a release, confirm an anonymous pull works with `docker logout ghcr.io && docker pull ghcr.io/ngrok-adhoc/mcp-oauth-provider:latest`.
 
 If an automated release creates its tag using `GITHUB_TOKEN`, explicitly dispatch the publishing workflow at that tag because that token's tag push does not trigger another workflow:
 
@@ -368,3 +371,11 @@ gh workflow run publish-image.yml --ref v0.1.0
 ```
 
 The workflow must already be on the default branch for dispatch. Retry a failed image build at the same tag; never overwrite the tag or create another version merely to retry a build.
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

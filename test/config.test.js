@@ -198,6 +198,13 @@ test("storage mode selects local JSON, automatic S3, or required S3", async (t) 
     },
   });
   assert.equal(s3.storage.required, true);
+  assert.equal(s3.storage.owner, undefined);
+  const pinned = await readConfig({ cwd, env: { ...env, S3_BUCKET_OWNER: "123456789012" } });
+  assert.equal(pinned.storage.owner, "123456789012");
+  await assert.rejects(
+    readConfig({ cwd, env: { ...env, S3_BUCKET_OWNER: "my-account" } }),
+    /S3_BUCKET_OWNER/,
+  );
   assert.equal(s3.storage.key, "custom.json");
   assert.equal(s3.storage.region, "us-east-1");
   assert.deepEqual(s3.storage.credentials, {

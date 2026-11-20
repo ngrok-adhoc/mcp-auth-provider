@@ -17,6 +17,7 @@ const close = (server) =>
     server.close(resolve);
   });
 const gatewaySecret = "test-gateway-secret-".repeat(3);
+const gateway = { headers: { "x-mcp-oauth-provider-secret": gatewaySecret } };
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwks = {
   keys: [{ ...privateKey.export({ format: "jwk" }), kid: "server-test", use: "sig", alg: "RS256" }],
@@ -77,6 +78,11 @@ test("only the private adapter forwards to the fixed MCP target", async (t) => {
   assert.equal(mcp.headers.get("x-upstream"), "preserved");
   assert.deepEqual(await mcp.json(), { url: "/private-mcp", body: "unchanged MCP payload" });
   assert.equal((await fetch(`${mcpProxyUrl}/other`)).status, 404);
+  const ungated = await fetch(`${mcpProxyUrl}/mcp`, {
+    headers: { "x-mcp-oauth-provider-secret": "wrong" },
+  });
+  assert.equal(ungated.status, 403);
+  assert.equal((await fetch(`${mcpProxyUrl}/mcp`)).status, 403);
   const malformedStatus = await new Promise((resolve, reject) => {
     const target = new URL(mcpProxyUrl);
     const request = httpRequest(
@@ -105,13 +111,13 @@ test("offline upstream returns a useful 503 and recovers without provider restar
   const { upstream, url, mcpProxyUrl } = await fixture(t, (req, res) => res.end("recovered"));
   const port = new URL(url).port;
   await close(upstream);
-  const mcp = await fetch(`${mcpProxyUrl}/mcp`);
+  const mcp = await fetch(`${mcpProxyUrl}/mcp`, gateway);
   assert.equal(mcp.status, 503);
   const error = await mcp.json();
   assert.equal(error.error, "mcp_upstream_unavailable");
   assert.match(error.action, /Start the server/);
   await listen(upstream, Number(port));
-  assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`)).text(), "recovered");
+  assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`, gateway)).text(), "recovered");
 });
 
 test("established MCP requests can wait for slow tool response headers", async (t) => {
@@ -124,7 +130,7 @@ test("established MCP requests can wait for slow tool response headers", async (
   });
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const response = new Promise((resolve, reject) => {
-    const req = httpRequest(`${mcpProxyUrl}/mcp`, (res) => {
+    const req = httpRequest(`${mcpProxyUrl}/mcp`, gateway, (res) => {
       let body = "";
       res.on("data", (chunk) => (body += chunk));
       res.on("end", () => resolve({ status: res.statusCode, body }));
@@ -145,7 +151,7 @@ test("MCP responses stream before the upstream closes", async (t) => {
     res.write("data: first\n\n");
     finish = () => res.end("data: last\n\n");
   });
-  const response = await fetch(`${mcpProxyUrl}/mcp`);
+  const response = await fetch(`${mcpProxyUrl}/mcp`, gateway);
   const reader = response.body.getReader();
   assert.match(new TextDecoder().decode((await reader.read()).value), /data: first/);
   finish();
@@ -166,6 +172,6 @@ test("a root-mounted MCP server is reachable only through the private adapter", 
   assert.equal((await fetch(`${helperUrl}/`)).status, 404);
   assert.equal((await fetch(`${helperUrl}/anything`)).status, 404);
   assert.equal(requests, 0);
-  assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`)).text(), "/");
+  assert.equal(await (await fetch(`${mcpProxyUrl}/mcp`, gateway)).text(), "/");
   assert.equal(requests, 1);
 });

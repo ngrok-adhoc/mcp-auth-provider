@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -45,8 +45,7 @@ test("OAuth state is private, Git-ignored, and recovers after a process is kille
     process.kill(process.pid, "SIGKILL");
   `);
   assert.equal(crashed.signal, "SIGKILL", crashed.stderr);
-  await assert.rejects(() => openOAuthState(issuer, users, cwd), /already locked/);
-  await rmdir(join(directory, ".lock"));
+  // A lock left by a dead process on this host is cleared automatically.
   const recovered = await openOAuthState(issuer, users, cwd);
   try {
     assert.equal(recovered.kid, initial.kid);
@@ -57,6 +56,16 @@ test("OAuth state is private, Git-ignored, and recovers after a process is kille
   } finally {
     await recovered.close();
   }
+  // Locks from another host, or without a holder, may belong to a live provider.
+  const lock = join(directory, ".lock");
+  await mkdir(lock);
+  await assert.rejects(() => openOAuthState(issuer, users, cwd), /already locked/);
+  await writeFile(join(lock, "holder"), `other-host ${process.pid + 1}`);
+  await assert.rejects(() => openOAuthState(issuer, users, cwd), /already locked/);
+  // Same hostname in another PID namespace, such as a second container: its PIDs are not ours to check.
+  await writeFile(join(lock, "holder"), `${hostname()}/pid:[1] 999999`);
+  await assert.rejects(() => openOAuthState(issuer, users, cwd), /already locked/);
+  await rm(lock, { recursive: true });
 
   const state = await openOAuthState(issuer, users, cwd);
   const pending = join(directory, ".oauth.json.tmp");
@@ -259,4 +268,22 @@ test("automatic S3 falls back without credentials and required S3 fails closed",
     },
   );
   assert.equal(result.status, 0, result.stderr || String(result.error));
+});
+
+test("anonymous authorization requests do not write OAuth state", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "mcp-oauth-interactions-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const state = await openOAuthState("https://provider.example", ["owner@example.com"], cwd);
+  try {
+    const filename = join(cwd, ".mcp-oauth-provider", "oauth.json");
+    const before = await readFile(filename, "utf8");
+    const interactions = state.adapter("Interaction");
+    await interactions.upsert("uid", { uid: "uid", params: {} }, 60);
+    assert.deepEqual(await interactions.find("uid"), { uid: "uid", params: {} });
+    assert.equal(await readFile(filename, "utf8"), before);
+    await interactions.destroy("uid");
+    assert.equal(await interactions.find("uid"), undefined);
+  } finally {
+    await state.close();
+  }
 });

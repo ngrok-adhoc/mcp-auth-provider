@@ -151,7 +151,35 @@ function jsonAdapter(
 ): AdapterFactory {
   const now = () => Math.floor(Date.now() / 1000);
   const live = (row: Row, time: number) => row.expires === undefined || row.expires > time;
+  // Anonymous /auth creates interactions, so keep them in memory instead of rewriting storage per request.
+  const interactions = new Map<string, Row>();
+  const interactionAdapter: Adapter = {
+    async upsert(id, data, expiresIn) {
+      const time = now();
+      interactions.delete(id);
+      for (const [key, row] of interactions) if (!live(row, time)) interactions.delete(key);
+      if (interactions.size >= 1000) interactions.delete(interactions.keys().next().value!);
+      interactions.set(id, {
+        model: "Interaction",
+        id,
+        payload: structuredClone(data),
+        ...(expiresIn === undefined ? {} : { expires: now() + expiresIn + oauthClockTolerance }),
+      });
+    },
+    async find(id) {
+      const row = interactions.get(id);
+      return row && live(row, now()) ? structuredClone(row.payload) : undefined;
+    },
+    async destroy(id) {
+      interactions.delete(id);
+    },
+    findByUid: async () => undefined,
+    findByUserCode: async () => undefined,
+    consume: async () => {},
+    revokeByGrantId: async () => {},
+  };
   return (model): Adapter => {
+    if (model === "Interaction") return interactionAdapter;
     function find(match: (row: Row) => boolean) {
       const time = now();
       return read().findLast((row) => row.model === model && live(row, time) && match(row));
@@ -171,7 +199,7 @@ function jsonAdapter(
           let rows = read().filter(
             (row) => live(row, time) && (row.model !== model || row.id !== id),
           );
-          // Clients and interactions can be created before Google sign-in.
+          // Clients can be registered before Google sign-in.
           if (model === "Client") {
             const clients = rows.filter((row) => row.model === "Client");
             if (clients.length >= 1000) {
@@ -183,9 +211,6 @@ function jsonAdapter(
                 throw new OAuthUnavailable("OAuth client registration capacity is full.");
               rows = rows.filter((row) => row !== oldest);
             }
-          } else if (model === "Interaction") {
-            const oldest = rows.filter((row) => row.model === "Interaction").at(-1000);
-            if (oldest) rows = rows.filter((row) => row !== oldest);
           }
           rows.push({
             model,

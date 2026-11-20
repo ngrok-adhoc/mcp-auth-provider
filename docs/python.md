@@ -13,7 +13,7 @@ The Compose example below uses the provider image from GitHub Container Registry
 
 Requires Docker with Compose, an ngrok account with the required paid endpoints/Traffic Policy actions, and a Google account for sign-in. No custom Google application is needed.
 
-> The image is published but currently private. Registry pulls require an authorized GitHub login with package-read access and any organization SSO approval. To use a local build instead, follow [Build the image locally](../README.md#build-the-image-locally), then start Compose with `--pull never`.
+The image is public on GitHub Container Registry, so no registry login is needed. To use a local build instead, follow [Build the image locally](../README.md#build-the-image-locally), then start Compose with `--pull never`.
 
 Create a new directory:
 
@@ -92,7 +92,7 @@ volumes:
 
 Start the stack. Docker pulls the images automatically; no repository checkout or local build is needed:
 
-For a registry pull, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` with a classic PAT that has package-read access and the required organization SSO authorization. Local builds use `--pull never` instead.
+To use a local build, add `--pull never` to the command.
 
 ```sh
 docker compose --env-file .env up -d
@@ -140,7 +140,7 @@ Check the request using the printed Traffic Inspector link. A plain `curl` to pu
 
 ## Keep running, stop or reconnect
 
-Access tokens last 90 days. Rotating refresh tokens share that same authorization window, and renewed access tokens expire when the window ends. Provider keys and OAuth records live in the `oauth-state` volume. Keep the volume, a fixed `NGROK_URL`, and the same `USERS` list to stay connected when restarting or rebuilding the provider.
+Access tokens last one hour. Rotating refresh tokens share a 90-day authorization window, and renewed access tokens expire no later than that window. Provider keys and OAuth records live in the `oauth-state` volume. Keep the volume, a fixed `NGROK_URL`, and the same `USERS` list to stay connected when restarting or rebuilding the provider.
 
 Changing `USERS` or the public origin clears authorizations. If you need to reconnect, run `codex mcp logout hello-compose` and then `codex mcp login hello-compose`, or use the equivalent `claude mcp logout` and `claude mcp login` commands.
 

@@ -325,7 +325,7 @@ async function checkOAuth(
         );
         assert.match(html, /rel="stylesheet" href="\/interaction\/consent\.css"/);
         assert.equal((html.match(/<form\b/g) ?? []).length, 1);
-        assert.match(html, /<details>\s*<summary>Connection details<\/summary>/);
+        assert.match(html, /<details open="">\s*<summary>Connection details<\/summary>/);
         assert.equal((html.match(/<div><dt>/g) ?? []).length, 4);
         assert.match(html, />Cancel<\/button>/);
         assert.match(html, />Authorize<\/button>/);
@@ -391,7 +391,7 @@ async function checkOAuth(
   const exchanged = await exchange(authorizationCode, verifier);
   assert.equal(exchanged.status, 200, await exchanged.clone().text());
   const token = await exchanged.json();
-  assert.equal(token.expires_in, 90 * 24 * 60 * 60);
+  assert.equal(token.expires_in, 60 * 60);
   assert.equal(typeof token.refresh_token, "string");
   const claims = JSON.parse(Buffer.from(token.access_token.split(".")[1], "base64url"));
   const [header, payload, signature] = token.access_token.split(".");
@@ -407,7 +407,7 @@ async function checkOAuth(
   assert.equal(claims.aud, resource);
   assert.equal(claims.sub, "owner");
   assert.equal(claims.scope, "mcp:use");
-  assert.equal(claims.exp - claims.iat, 90 * 24 * 60 * 60);
+  assert.equal(claims.exp - claims.iat, 60 * 60);
   const refresh = (value, extra = {}) =>
     request("/token", {
       method: "POST",
@@ -447,15 +447,20 @@ async function checkOAuth(
 
   if (persistent) {
     await start();
+    // The browser session survives a restart, but consent is still required every time.
     const remembered = await authorize();
-    assert.ok(remembered.headers.get("location")?.startsWith(redirectUri));
+    const consent = await request(remembered.headers.get("location"), {
+      headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
+    });
+    assert.equal(consent.status, 200, await consent.clone().text());
+    assert.match(await consent.text(), /Authorize/);
   }
   now += 301_000;
   assert.ok(claims.exp > Math.floor(now / 1000));
   const renewed = await refresh(token.refresh_token);
   assert.equal(renewed.status, 200, await renewed.clone().text());
   const renewedToken = await renewed.json();
-  assert.equal(renewedToken.expires_in, 90 * 24 * 60 * 60 - 301);
+  assert.equal(renewedToken.expires_in, 60 * 60);
   assert.notEqual(renewedToken.refresh_token, token.refresh_token);
   const renewedClaims = JSON.parse(
     Buffer.from(renewedToken.access_token.split(".")[1], "base64url"),
@@ -464,7 +469,7 @@ async function checkOAuth(
   assert.equal(renewedClaims.aud, resource);
   assert.equal(renewedClaims.sub, "owner");
   assert.equal(renewedClaims.scope, "mcp:use");
-  assert.equal(renewedClaims.exp, claims.exp);
+  assert.equal(renewedClaims.exp, Math.floor(now / 1000) + 60 * 60);
 
   await rejected(await refresh(token.refresh_token), "invalid_grant");
   // Reusing a consumed refresh revokes the entire grant, including its current rotation.
@@ -491,24 +496,21 @@ async function checkOAuth(
   const lifetimeClaims = JSON.parse(
     Buffer.from(lifetimeToken.access_token.split(".")[1], "base64url"),
   );
-  assert.equal(lifetimeClaims.exp - lifetimeClaims.iat, 90 * 24 * 60 * 60);
+  assert.equal(lifetimeClaims.exp - lifetimeClaims.iat, 60 * 60);
   now += 2 * 24 * 60 * 60 * 1000;
   const afterBrowserSession = await refresh(lifetimeToken.refresh_token);
   assert.equal(afterBrowserSession.status, 200, await afterBrowserSession.clone().text());
   const middleToken = await afterBrowserSession.json();
   assert.notEqual(middleToken.refresh_token, lifetimeToken.refresh_token);
-  assert.equal(middleToken.expires_in, 88 * 24 * 60 * 60);
-  assert.equal(
-    JSON.parse(Buffer.from(middleToken.access_token.split(".")[1], "base64url")).exp,
-    lifetimeClaims.exp,
-  );
+  assert.equal(middleToken.expires_in, 60 * 60);
   now = issuedAt + (90 * 24 * 60 * 60 - 60) * 1000;
   const nearLimit = await refresh(middleToken.refresh_token);
   assert.equal(nearLimit.status, 200, await nearLimit.clone().text());
   const lastToken = await nearLimit.json();
   assert.equal(lastToken.expires_in, 60);
   const lastClaims = JSON.parse(Buffer.from(lastToken.access_token.split(".")[1], "base64url"));
-  assert.equal(lastClaims.exp, lifetimeClaims.exp);
+  // Access tokens never outlive the 90-day grant.
+  assert.equal(lastClaims.exp, Math.floor(issuedAt / 1000) + 90 * 24 * 60 * 60);
   now = issuedAt + (90 * 24 * 60 * 60 + 1) * 1000;
   assert.ok(lastClaims.exp < Math.floor(now / 1000));
   await rejected(await refresh(lastToken.refresh_token), "invalid_grant");
@@ -545,11 +547,15 @@ async function checkOAuth(
     const interaction = login.headers.get("location");
     assert.match(interaction, /^\/interaction\//);
     await mkdir(join(project, ".mcp-oauth-provider", ".oauth.json.tmp"));
-    const page = await request(interaction, {
+    // Interactions live in memory, so the outage surfaces when sign-in saves the browser session.
+    const signedIn = await request(interaction, {
       headers: { "x-mcp-oauth-provider-secret": gatewaySecret },
     });
+    assert.equal(signedIn.status, 303);
+    const page = await request(signedIn.headers.get("location"));
     const message = "OAuth storage is unavailable. Contact the provider operator.";
     assert.equal(page.status, 503);
+    assert.equal(page.headers.get("x-frame-options"), "DENY");
     assert.equal(await page.text(), message);
 
     const unavailable = await refresh(prior.refresh_token, { client_id: freshClient.client_id });
@@ -612,3 +618,58 @@ for (const profile of [
 ])
   test(`OAuth ${profile.name}: consent, PKCE, JWT, refresh and one-time codes`, (t) =>
     checkOAuth(t, profile));
+
+test("only query responses, small valid metadata and routed features are offered", async (t) => {
+  let handle;
+  const server = createServer((req, res) => handle(req, res));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => server.close());
+  const issuer = `http://127.0.0.1:${server.address().port}`;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const key = { ...privateKey.export({ format: "jwk" }), kid: "k", use: "sig", alg: "RS256" };
+  ({ handle } = createIssuer({ issuer, gatewaySecret: "x".repeat(40), jwks: { keys: [key] } }));
+  const register = (metadata) =>
+    fetch(`${issuer}/reg`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: ["http://127.0.0.1/cb"],
+        token_endpoint_auth_method: "none",
+        ...metadata,
+      }),
+    });
+  const client = await (await register({})).json();
+  assert.deepEqual(client.response_modes, ["query"]);
+  assert.equal((await register({ response_modes: ["form_post"] })).status, 400);
+  assert.equal((await register({ redirect_uris: ["not a url"] })).status, 400);
+  assert.equal((await register({ client_name: "x".repeat(5000) })).status, 400);
+  const auth = (mode) =>
+    fetch(
+      `${issuer}/auth?${new URLSearchParams({
+        client_id: client.client_id,
+        redirect_uri: "http://127.0.0.1/cb",
+        response_type: "code",
+        response_mode: mode,
+        code_challenge_method: "S256",
+        code_challenge: "a".repeat(43),
+      })}`,
+      { redirect: "manual" },
+    );
+  // form_post would render the code in a page on the shared public origin.
+  const formPost = await auth("form_post");
+  assert.equal(formPost.status, 400);
+  const rejection = await formPost.text();
+  assert.match(rejection, /response_mode is not allowed/);
+  assert.doesNotMatch(rejection, /name="code"/);
+  const error = await fetch(`${issuer}/auth?client_id=unknown`);
+  assert.equal(error.headers.get("x-frame-options"), "DENY");
+  assert.match(error.headers.get("content-type"), /^text\/plain/);
+  assert.doesNotMatch(await error.text(), /<|googleapis/);
+  assert.match((await auth("query")).headers.get("location"), /^\/interaction\//);
+  const discovery = await (await fetch(`${issuer}/.well-known/openid-configuration`)).json();
+  assert.deepEqual(discovery.response_modes_supported, ["query"]);
+  assert.equal(discovery.dpop_signing_alg_values_supported, undefined);
+  assert.equal(discovery.pushed_authorization_request_endpoint, undefined);
+  assert.equal(discovery.end_session_endpoint, undefined);
+});
