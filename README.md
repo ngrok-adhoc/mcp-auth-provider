@@ -222,7 +222,7 @@ Reserved paths are `/mcp`, `/mcp/*`, `/mcp-debug`, `/mcp-debug/*`, `/auth`, `/au
 
 Requires Docker with Compose, a Google account and an ngrok account with the required paid endpoints and Traffic Policy actions. No local Python, Node installation or repository checkout is needed.
 
-> The image is published but currently private. Registry pulls require an authorized GitHub login with package-read access and any organization SSO approval. For a local build, follow [Build the image locally](#build-the-image-locally).
+The image is public on GitHub Container Registry, so no registry login is needed. To use a local build instead, follow [Build the image locally](#build-the-image-locally).
 
 ```sh
 mkdir mcp-demo
@@ -239,8 +239,6 @@ USERS='["you@example.com"]'
 ```
 
 Use your **ngrok agent authtoken**, not an API key. Keep `.env` private and out of Git. Copy the single [Compose example from the tutorial](https://github.com/ngrok-adhoc/mcp-oauth-provider/blob/main/docs/python.md#start-the-stack) into `compose.yaml` in the same directory, then run:
-
-For a registry pull, first run `docker login ghcr.io -u YOUR_GITHUB_USERNAME` with a classic PAT that has package-read access and the required organization SSO authorization. Local builds use `--pull never` instead.
 
 ```sh
 docker compose --env-file .env up -d
@@ -364,7 +362,7 @@ npm run tag-release -- 0.1.0
 
 The command creates an annotated `v0.1.0` tag without overwriting existing tags. Its push runs **Publish image**, publishing Linux amd64/arm64 images to `ghcr.io/ngrok-adhoc/mcp-oauth-provider` with `0.1.0`, `v0.1.0`, a commit SHA tag and `latest`. Main-branch builds only warm the build cache. Wait for the image workflow to succeed before updating tutorial image versions.
 
-The GHCR package remains private. Consumers need package-read access and an authorized registry login; organization SSO approval may also be required. Public visibility and anonymous-pull verification are deferred. A successful publishing workflow does not prove that a consumer can pull the image.
+Package visibility is set in the GHCR package settings, not by the workflow. After a release, confirm an anonymous pull works with `docker logout ghcr.io && docker pull ghcr.io/ngrok-adhoc/mcp-oauth-provider:latest`.
 
 If an automated release creates its tag using `GITHUB_TOKEN`, explicitly dispatch the publishing workflow at that tag because that token's tag push does not trigger another workflow:
 
@@ -373,3 +371,11 @@ gh workflow run publish-image.yml --ref v0.1.0
 ```
 
 The workflow must already be on the default branch for dispatch. Retry a failed image build at the same tag; never overwrite the tag or create another version merely to retry a build.
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)

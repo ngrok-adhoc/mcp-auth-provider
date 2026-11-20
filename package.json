@@ -2,7 +2,7 @@
   "name": "mcp-oauth-provider",
   "version": "0.1.1",
   "description": "Add ngrok-managed OAuth to a local MCP server without changing its code",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ngrok-adhoc/mcp-oauth-provider.git"
@@ -14,6 +14,7 @@
     "dist/",
     "assets/",
     "README.md",
+    "LICENSE",
     ".env.example"
   ],
   "type": "module",
